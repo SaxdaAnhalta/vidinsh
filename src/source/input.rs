@@ -259,13 +259,14 @@ pub fn resolve_portal(url: &str, max_height: u32, limit: Duration) -> Result<Auf
         "-g",
         url,
     ]);
-    let (ok, out) = super::probe::run_limited(&mut c, limit)?;
-    let mut urls = out
+    let lauf = super::probe::run_limited(&mut c, limit)?;
+    let mut urls = lauf
+        .stdout
         .lines()
         .filter(|l| l.starts_with("http"))
         .map(str::to_string);
 
-    let Some(video) = urls.next().filter(|_| ok) else {
+    let Some(video) = urls.next().filter(|_| lauf.erfolg) else {
         bail!("yt-dlp konnte aus dieser URL keine abspielbare Adresse gewinnen");
     };
     Ok(Aufgeloest {
@@ -359,42 +360,29 @@ pub fn resolve_camera(input: &mut Input) -> Result<()> {
 /// Kameras auflisten. ffmpeg schreibt die Liste als Fehlermeldung auf stderr
 /// und endet mit einem Fehlercode -- das ist so vorgesehen.
 fn list_devices_raw() -> Result<String> {
-    #[cfg(windows)]
-    let (prog, args): (&str, Vec<&str>) = (
-        "ffmpeg",
-        vec![
-            "-hide_banner",
-            "-f",
-            "dshow",
-            "-list_devices",
-            "true",
-            "-i",
-            "dummy",
-        ],
-    );
-    #[cfg(target_os = "macos")]
-    let (prog, args): (&str, Vec<&str>) = (
-        "ffmpeg",
-        vec![
-            "-hide_banner",
-            "-f",
-            "avfoundation",
-            "-list_devices",
-            "true",
-            "-i",
-            "",
-        ],
-    );
+    // Unter Linux gibt es keinen Geräte-Auflister in ffmpeg; dort sind die
+    // Kameras schlicht Dateien.
     #[cfg(all(unix, not(target_os = "macos")))]
-    let (prog, args): (&str, Vec<&str>) = ("sh", vec!["-c", "ls -1 /dev/video* 2>/dev/null"]);
+    let mut cmd = {
+        let mut c = Command::new("sh");
+        c.args(["-c", "ls -1 /dev/video* 2>/dev/null"]);
+        c
+    };
 
-    let out = Command::new(prog)
-        .args(&args)
-        .output()
-        .context("ffmpeg lässt sich nicht starten")?;
-    let mut s = String::from_utf8_lossy(&out.stderr).into_owned();
-    s.push_str(&String::from_utf8_lossy(&out.stdout));
-    Ok(s)
+    #[cfg(not(all(unix, not(target_os = "macos"))))]
+    let mut cmd = {
+        let mut c = Command::new(super::tools::ffmpeg());
+        c.args(["-hide_banner", "-nostdin"]);
+        #[cfg(windows)]
+        c.args(["-f", "dshow", "-list_devices", "true", "-i", "dummy"]);
+        #[cfg(target_os = "macos")]
+        c.args(["-f", "avfoundation", "-list_devices", "true", "-i", ""]);
+        c
+    };
+
+    let lauf = super::probe::run_limited(&mut cmd, Duration::from_secs(15))
+        .context("Geräteliste lässt sich nicht abrufen")?;
+    Ok(format!("{}{}", lauf.stderr, lauf.stdout))
 }
 
 #[cfg(test)]
@@ -492,6 +480,7 @@ mod tests {
 
     #[test]
     fn unsinnige_kameranummer_nennt_die_verfuegbaren() {
+        let _ = super::super::tools::init(None);
         let mut i = classify("cam:99");
         // Auf einem System mit 100 Kameras wäre das kein Fehler -- deshalb
         // wird nur der Fehlerfall geprüft.

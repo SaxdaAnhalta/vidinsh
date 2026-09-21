@@ -3,13 +3,24 @@ name = "vidinsh"
 version = "0.1.0"
 edition = "2024"
 
+[features]
+default = []
+# Packt ffmpeg in die Programmdatei: eine einzelne Exe, die ohne jede
+# Installation laeuft. Bauen mit: cargo build --release --features bundled
+bundled = ["dep:zstd"]
+
+[build-dependencies]
+zstd = "0.13"
+
 [dependencies]
 anyhow = "1.0.104"
 clap = { version = "4.6.7", features = ["derive"] }
+cpal = "0.18.2"
 crossbeam-channel = "0.5.17"
 crossterm = "0.29.0"
 fontdue = "0.9.4"
 rayon = "1.12.0"
+zstd = { version = "0.13", optional = true }
 
 [target."cfg(windows)".dependencies]
 windows-sys = { version = "0.61.2", features = ["Win32_System_Console", "Win32_Foundation"] }

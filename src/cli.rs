@@ -186,6 +186,10 @@ pub struct Args {
     #[arg(long, help_heading = "Sonstiges")]
     pub list_devices: bool,
 
+    /// Eigene ffmpeg-Programmdatei benutzen
+    #[arg(long, value_name = "PFAD", help_heading = "Sonstiges")]
+    pub ffmpeg: Option<PathBuf>,
+
     /// Maximale Höhe, die yt-dlp holen soll
     #[arg(
         long,

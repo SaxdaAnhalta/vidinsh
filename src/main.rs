@@ -38,6 +38,11 @@ const SPUL_GEDULD: Duration = Duration::from_secs(5);
 /// unbegrenzt ein stehendes Bild zu zeigen.
 const WARTE_GRENZE: Duration = Duration::from_secs(90);
 
+/// Ab welcher Abweichung vom Ton die Bild-Uhr nachgezogen wird. Kleiner wäre
+/// unruhig -- Puffergrößen schwanken ohnehin um einige Zehntelsekunden --,
+/// größer wäre als Versatz zwischen Bild und Ton wahrnehmbar.
+const TON_DRIFT: f64 = 0.15;
+
 fn main() -> ExitCode {
     term::install_panic_hook();
     let args = Args::parse();
@@ -56,6 +61,7 @@ fn run(args: Args) -> Result<()> {
     args.validate()?;
 
     if args.list_devices {
+        source::tools::init(args.ffmpeg.as_deref())?;
         let geraete = input::video_devices()?;
         if geraete.is_empty() {
             println!("Keine Kameras gefunden.");
@@ -72,6 +78,13 @@ fn run(args: Args) -> Result<()> {
 
     if args.probe {
         return show_probe(&caps);
+    }
+
+    // Ab hier wird ffmpeg gebraucht. Einmal festlegen, welches -- bei einer
+    // Fassung mit mitgeliefertem ffmpeg wird es hier einmalig entpackt.
+    source::tools::init(args.ffmpeg.as_deref())?;
+    if args.verbose {
+        eprintln!("ffmpeg: {}", source::tools::beschreibung());
     }
 
     let roh = args.input.clone().expect("clap erzwingt die Eingabe");
@@ -406,6 +419,9 @@ fn play(args: Args, caps: Caps, quelle: input::Input, info: MediaInfo) -> Result
     // Prozess noch anläuft oder eine Netzquelle puffert -- und dann gilt
     // alles, was danach kommt, als überfällig und wird verworfen.
     let mut warte_auf_erstes_bild = true;
+    // Zuletzt gesehene Abspielposition des Tons -- daran wird erkannt, ob er
+    // überhaupt läuft.
+    let mut letzte_tonposition = -1.0f64;
     let mut warten_seit = Instant::now();
     // Wurde für diesen Sprung schon auf sequenzielles Überspulen umgestellt?
     let mut sequenziell_versucht = false;
@@ -425,7 +441,7 @@ fn play(args: Args, caps: Caps, quelle: input::Input, info: MediaInfo) -> Result
                 Cmd::TogglePause => {
                     clock.toggle_pause();
                     if let Some(a) = &mut audio {
-                        a.set_paused(clock.is_paused(), clock.media_now().as_secs_f64());
+                        a.set_paused(clock.is_paused());
                     }
                 }
                 Cmd::NextColor => {
@@ -469,7 +485,7 @@ fn play(args: Args, caps: Caps, quelle: input::Input, info: MediaInfo) -> Result
                 Cmd::VolumeStep(d) => {
                     st.volume = (st.volume as i32 + d).clamp(0, 100) as u32;
                     if let Some(a) = &mut audio {
-                        a.set_volume(st.volume, clock.media_now().as_secs_f64());
+                        a.set_volume(st.volume);
                     }
                 }
                 Cmd::Seek(d) => {
@@ -614,8 +630,37 @@ fn play(args: Args, caps: Caps, quelle: input::Input, info: MediaInfo) -> Result
             clock.seek_to(pts);
             warte_auf_erstes_bild = false;
             if ton_gewuenscht && audio.is_none() {
-                audio = audio::start(&quelle, pts.as_secs_f64(), st.volume);
+                audio = if args.verbose {
+                    // Mit -v soll man sehen, *warum* kein Ton kommt.
+                    match audio::start_verbose(&quelle, pts.as_secs_f64(), st.volume) {
+                        Ok(a) => a,
+                        Err(e) => {
+                            eprintln!("Ton lässt sich nicht starten: {e:#}");
+                            None
+                        }
+                    }
+                } else {
+                    audio::start(&quelle, pts.as_secs_f64(), st.volume)
+                };
             }
+        }
+
+        // Ton als Leit-Uhr. Die Soundkarte zählt, was sie wirklich abgeholt
+        // hat -- das ist die verlässlichste Zeitquelle im Programm. Das Bild
+        // wird nachgezogen, sobald es spürbar abweicht.
+        //
+        // Nur, solange der Ton auch tatsächlich läuft: stockt er, darf er das
+        // Bild nicht mitreißen. Deshalb die Prüfung, ob die Position seit dem
+        // letzten Durchgang überhaupt gewachsen ist.
+        if let Some(a) = &audio {
+            let ton = a.position();
+            if !clock.is_paused() && ton > letzte_tonposition + 0.001 {
+                let drift = clock.media_now().as_secs_f64() - ton;
+                if drift.abs() > TON_DRIFT {
+                    clock.seek_to(Duration::from_secs_f64(ton));
+                }
+            }
+            letzte_tonposition = ton;
         }
 
         // Zu spät? Verwerfen, bevor gerendert wird -- das ist die Stelle, an

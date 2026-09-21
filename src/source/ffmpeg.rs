@@ -159,9 +159,9 @@ fn filter_chain(cfg: &Config, l: &Layout) -> String {
 impl FfmpegSource {
     pub fn spawn(cfg: &Config, layout: &Layout) -> Result<Self> {
         let args = build_args(cfg, layout);
-        let command_line = format!("ffmpeg {}", args.join(" "));
+        let command_line = format!("{} {}", super::tools::ffmpeg().display(), args.join(" "));
 
-        let mut child = Command::new("ffmpeg")
+        let mut child = Command::new(super::tools::ffmpeg())
             .args(&args)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())

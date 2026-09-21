@@ -3,6 +3,7 @@
 pub mod ffmpeg;
 pub mod input;
 pub mod probe;
+pub mod tools;
 
 use crate::render::geometry::Layout;
 use std::time::Duration;
