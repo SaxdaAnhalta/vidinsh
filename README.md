@@ -197,6 +197,12 @@ probieren.
 **Dunkles Material sieht nach nichts aus.** `--auto-contrast` spreizt die
 Helligkeit je Bild.
 
+**Kein Ton.** Die Statuszeile sagt es dir: `Ton 100%` heißt an, `Ton stumm`
+heißt auf 0 gedreht (mit `↑` wieder hoch), `ohne Ton` heißt, dass für diese
+Quelle kein Ton in Frage kommt. Mit `-v` steht beim Start eine Zeile, die die
+Entscheidung aufschlüsselt. Kamera und stdin haben nie Ton, `--once` und
+`--write` schalten ihn ab.
+
 **Der Ton wandert weg.** Siehe unten — das ist eine bekannte Grenze.
 
 **Es läuft gar nicht an.** `-v` zeigt das gebaute ffmpeg-Kommando und die

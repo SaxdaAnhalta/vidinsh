@@ -92,6 +92,8 @@ fn run(args: Args) -> Result<()> {
         Err(e) => return Err(e).context("Quelle lässt sich nicht öffnen"),
     };
 
+    let info = info.mit_tonspur(quelle.audio_input.as_deref());
+
     play(args, caps, quelle, info)
 }
 
@@ -340,6 +342,15 @@ fn play(args: Args, caps: Caps, quelle: input::Input, info: MediaInfo) -> Result
     // eine Netzquelle das erste Bild liefert, vergehen leicht Sekunden.
     let mut audio: Option<audio::Audio> = None;
     let ton_gewuenscht = args.want_audio() && info.has_audio && _guard.is_some();
+    if args.verbose {
+        eprintln!(
+            "Ton: {} (Quelle hat Tonspur: {}, getrennte Adresse: {}, --no-audio: {})",
+            if ton_gewuenscht { "an" } else { "aus" },
+            ja(info.has_audio),
+            ja(quelle.audio_input.is_some()),
+            ja(args.no_audio),
+        );
+    }
 
     let mut clock = Clock::new(args.speed);
     clock.seek_to(Duration::from_secs_f64(base));
@@ -547,6 +558,7 @@ fn play(args: Args, caps: Caps, quelle: input::Input, info: MediaInfo) -> Result
                     paused: clock.is_paused(),
                     speed: clock.speed(),
                     live: quelle.is_live,
+                    volume: ton_gewuenscht.then_some(st.volume),
                     stats: args.stats.then_some(term::ui::Stats {
                         fps: fps_fenster.2,
                         dropped,

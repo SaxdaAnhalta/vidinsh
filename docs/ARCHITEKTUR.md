@@ -325,6 +325,17 @@ Portale liefern Bild und Ton getrennt — bei YouTube ist das der Normalfall.
 der Ton an ffplay. Bei `-f A+B` gibt yt-dlp die Adressen in der Reihenfolge des
 Selektors aus, also erst Bild, dann Ton.
 
+Daran hing eine Falle, die erst beim Zuhören auffiel: `probe` befragt die
+*Bild*-Adresse, und die trägt bei YouTube naturgemäß keine Tonspur. `has_audio`
+blieb deshalb `false` und der Ton wurde nie gestartet — das Video lief stumm,
+ohne jede Fehlermeldung. `MediaInfo::mit_tonspur` korrigiert das: eine zweite
+Adresse gibt es nur, weil der Selektor mit `ba` ausdrücklich Ton angefordert
+hat, sie ist also der verlässlichere Hinweis als das Probe-Ergebnis.
+
+Lehre daraus für die Statuszeile: sie unterscheidet jetzt `Ton 100%`,
+`Ton stumm` und `ohne Ton`. Ein stummes Video ohne jede Anzeige lässt den
+Benutzer im Dunkeln, woran es liegt.
+
 ---
 
 ## Wo man ansetzt

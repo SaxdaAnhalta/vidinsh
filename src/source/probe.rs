@@ -27,6 +27,20 @@ impl MediaInfo {
         }
     }
 
+    /// Berücksichtigt eine getrennt danebenliegende Tonspur.
+    ///
+    /// `probe` befragt die *Bild*-Adresse. Liegt der Ton getrennt daneben --
+    /// bei YouTube der Normalfall --, findet es dort naturgemäß keine
+    /// Tonspur, und die Wiedergabe bliebe stumm. Eine zweite Adresse gibt es
+    /// nur, weil der Formatselektor mit `ba` ausdrücklich eine Tonspur
+    /// angefordert hat; sie ist also der verlässlichere Hinweis.
+    pub fn mit_tonspur(mut self, getrennt: Option<&str>) -> Self {
+        if getrennt.is_some() {
+            self.has_audio = true;
+        }
+        self
+    }
+
     /// Notnagel, wenn ffprobe nichts liefert -- etwa bei manchen Live-Quellen.
     pub fn fallback() -> Self {
         MediaInfo {
@@ -185,6 +199,27 @@ mod tests {
         assert_eq!(parse_rate("abc/1"), None);
         // ffprobe liefert 90000/1 für manche Container -- das ist keine Bildrate.
         assert_eq!(parse_rate("90000/1"), None);
+    }
+
+    #[test]
+    fn getrennte_tonspur_setzt_has_audio() {
+        // Der Fall YouTube: ffprobe sah auf der Bild-Adresse keinen Ton.
+        let i = MediaInfo::fallback();
+        assert!(!i.has_audio);
+        assert!(
+            i.mit_tonspur(Some("https://host/audio")).has_audio,
+            "sonst bleibt die Wiedergabe stumm"
+        );
+    }
+
+    #[test]
+    fn ohne_getrennte_tonspur_bleibt_der_befund_stehen() {
+        let stumm = MediaInfo::fallback();
+        assert!(!stumm.clone().mit_tonspur(None).has_audio);
+
+        let mut mit = MediaInfo::fallback();
+        mit.has_audio = true;
+        assert!(mit.mit_tonspur(None).has_audio, "darf nichts wegnehmen");
     }
 
     #[test]

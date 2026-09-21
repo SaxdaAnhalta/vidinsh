@@ -24,6 +24,8 @@ pub struct Status<'a> {
     pub paused: bool,
     pub speed: f64,
     pub live: bool,
+    /// Lautstärke, oder `None` wenn diese Quelle keinen Ton hat
+    pub volume: Option<u32>,
     pub stats: Option<Stats>,
 }
 
@@ -47,6 +49,14 @@ pub fn render(s: &Status, width: u16) -> String {
 
     if (s.speed - 1.0).abs() > 0.01 {
         t.push_str(&format!("  {:.2}x", s.speed));
+    }
+
+    // Ohne Anzeige ist nicht zu unterscheiden, ob der Ton stumm gedreht ist
+    // oder die Quelle gar keinen hat.
+    match s.volume {
+        Some(0) => t.push_str("  Ton stumm"),
+        Some(v) => t.push_str(&format!("  Ton {v}%")),
+        None => t.push_str("  ohne Ton"),
     }
 
     t.push_str(&format!(
@@ -116,6 +126,7 @@ mod tests {
             paused: false,
             speed: 1.0,
             live: false,
+            volume: Some(100),
             stats: None,
         }
     }
@@ -162,6 +173,21 @@ mod tests {
         let mut s = status();
         s.paused = true;
         assert!(render(&s, 120).contains("||"));
+    }
+
+    #[test]
+    fn ton_zustand_ist_immer_ablesbar() {
+        let mut s = status();
+        assert!(render(&s, 200).contains("Ton 100%"));
+        s.volume = Some(0);
+        assert!(render(&s, 200).contains("stumm"));
+        s.volume = None;
+        let z = render(&s, 200);
+        assert!(z.contains("ohne Ton"), "{z}");
+        assert!(
+            !z.contains("Ton 0"),
+            "eine tonlose Quelle ist nicht stummgedreht"
+        );
     }
 
     #[test]
