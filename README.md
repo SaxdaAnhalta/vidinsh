@@ -48,18 +48,29 @@ HLS, DASH, RTSP, RTMP, SRT und UDP kann ffmpeg selbst; die URL wandert
 unverändert hinein, zusammen mit Optionen zum Wiederverbinden. Nur Portale, bei
 denen die URL keine Mediendatei ist, brauchen `yt-dlp`.
 
-### yt-dlp nachrüsten (nur für Portale)
+### yt-dlp (nur für Portale)
 
-`yt-dlp` ist eine einzelne portable Datei. Sie gehört **nicht** global
-installiert, sondern hierhin:
+`yt-dlp` ist eine einzelne portable Datei und liegt hier:
 
 ```
 vidinsh/tools/yt-dlp.exe
 ```
 
-Gesucht wird in dieser Reihenfolge: `tools/` neben der Programmdatei, `tools/`
-im Arbeitsverzeichnis, dann der PATH. Ohne die Datei funktionieren alle anderen
-Quellenarten unverändert; nur Portal-Links melden verständlich, dass sie fehlt.
+**Nicht global installiert** — gesucht wird in dieser Reihenfolge: `tools/`
+neben der Programmdatei, `tools/` im Arbeitsverzeichnis, dann der PATH. Fehlt
+die Datei, funktionieren alle anderen Quellenarten unverändert; nur Portal-Links
+melden verständlich, dass sie gebraucht wird. Aktualisieren geht mit
+`tools\yt-dlp.exe -U`.
+
+YouTube liefert Bild und Ton in aller Regel **getrennt**; die gemuxten Formate
+gibt es nur noch in niedriger Auflösung. `vidinsh` nimmt deshalb eine gemuxte
+Spur, wenn es sie gibt, und sonst die beste Kombination aus getrenntem Bild und
+Ton — das Bild geht an ffmpeg, der Ton an die Tonwiedergabe.
+
+yt-dlp meldet beim Start `No supported JavaScript runtime could be found`. Das
+ist eine Warnung, keine Fehlermeldung: ohne JS-Runtime fehlen einige
+hochauflösende Formate, die übrigen funktionieren. Wer die volle Auswahl will,
+installiert Deno — dafür ist hier bewusst nichts vorbereitet.
 
 ---
 

@@ -320,6 +320,11 @@ zurückgestellt — nicht vergessen.
 Kamera und stdin bekommen keinen Ton: die Kamera hat keinen, und stdin lässt
 sich nicht von zwei Prozessen lesen.
 
+Portale liefern Bild und Ton getrennt — bei YouTube ist das der Normalfall.
+`Input` trägt deshalb ein eigenes Feld `audio_input`; das Bild geht an ffmpeg,
+der Ton an ffplay. Bei `-f A+B` gibt yt-dlp die Adressen in der Reihenfolge des
+Selektors aus, also erst Bild, dann Ton.
+
 ---
 
 ## Wo man ansetzt

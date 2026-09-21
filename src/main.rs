@@ -69,9 +69,13 @@ fn run(args: Args) -> Result<()> {
     input::resolve_camera(&mut quelle)?;
 
     if quelle.kind == Kind::Portal {
-        let direkt = input::resolve_portal(&quelle.ffmpeg_input, args.max_height, PROBE_LIMIT)?;
+        let a = input::resolve_portal(&quelle.ffmpeg_input, args.max_height, PROBE_LIMIT)?;
         let label = quelle.label.clone();
-        quelle = input::classify(&direkt);
+        // Die aufgelösten Adressen sind gewöhnliche HTTPS-URLs; classify
+        // versieht sie mit den passenden Reconnect-Optionen.
+        let audio = a.audio;
+        quelle = input::classify(&a.video);
+        quelle.audio_input = audio;
         quelle.label = label;
     }
 

@@ -54,7 +54,13 @@ impl Audio {
         if from > 0.0 {
             c.args(["-ss", &format!("{from:.3}")]);
         }
-        c.args(["-i", &self.input.ffmpeg_input]);
+        // Liefert die Quelle den Ton getrennt (YouTube), gilt diese Adresse.
+        let quelle = self
+            .input
+            .audio_input
+            .as_deref()
+            .unwrap_or(&self.input.ffmpeg_input);
+        c.args(["-i", quelle]);
 
         self.child = c
             .stdin(Stdio::null())

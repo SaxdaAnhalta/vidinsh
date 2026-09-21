@@ -24,8 +24,11 @@ pub enum Kind {
 #[derive(Clone, Debug)]
 pub struct Input {
     pub kind: Kind,
-    /// was am Ende hinter `-i` steht
+    /// was am Ende hinter `-i` steht (das Bild)
     pub ffmpeg_input: String,
+    /// getrennte Tonspur, falls die Quelle Bild und Ton nicht gemuxt liefert
+    /// -- bei YouTube ist das der Normalfall
+    pub audio_input: Option<String>,
     /// Argumente vor `-i` (Demuxer, Reconnect, Zeitlimits)
     pub pre_args: Vec<String>,
     /// laufende Quelle ohne festes Ende -- kein Spulen, kein Fortschritt
@@ -55,6 +58,7 @@ pub fn classify(raw: &str) -> Input {
         return Input {
             kind: Kind::Stdin,
             ffmpeg_input: "pipe:0".into(),
+            audio_input: None,
             pre_args: vec![],
             is_live: true,
             label: "stdin".into(),
@@ -78,6 +82,7 @@ pub fn classify(raw: &str) -> Input {
             return Input {
                 kind: Kind::Url,
                 ffmpeg_input: raw.into(),
+                audio_input: None,
                 pre_args: net_args(true),
                 is_live: true,
                 label: host,
@@ -93,6 +98,7 @@ pub fn classify(raw: &str) -> Input {
             return Input {
                 kind: if portal { Kind::Portal } else { Kind::Url },
                 ffmpeg_input: raw.into(),
+                audio_input: None,
                 pre_args: net_args(streaming),
                 is_live: streaming,
                 label: host,
@@ -103,6 +109,7 @@ pub fn classify(raw: &str) -> Input {
         return Input {
             kind: Kind::Url,
             ffmpeg_input: raw.into(),
+            audio_input: None,
             pre_args: vec![],
             is_live: false,
             label: raw.into(),
@@ -117,6 +124,7 @@ pub fn classify(raw: &str) -> Input {
     Input {
         kind: Kind::File,
         ffmpeg_input: raw.into(),
+        audio_input: None,
         pre_args: vec![],
         is_live: false,
         label,
@@ -150,6 +158,7 @@ fn camera(spec: &str) -> Input {
         Input {
             kind: Kind::Camera,
             ffmpeg_input: format!("video={spec}"),
+            audio_input: None,
             pre_args: vec!["-f".into(), "dshow".into()],
             is_live: true,
             label: format!("Kamera {spec}"),
@@ -160,6 +169,7 @@ fn camera(spec: &str) -> Input {
         Input {
             kind: Kind::Camera,
             ffmpeg_input: spec.to_string(),
+            audio_input: None,
             pre_args: vec!["-f".into(), "avfoundation".into()],
             is_live: true,
             label: format!("Kamera {spec}"),
@@ -175,6 +185,7 @@ fn camera(spec: &str) -> Input {
         Input {
             kind: Kind::Camera,
             ffmpeg_input: dev,
+            audio_input: None,
             pre_args: vec!["-f".into(), "v4l2".into()],
             is_live: true,
             label: format!("Kamera {spec}"),
@@ -216,8 +227,23 @@ pub fn find_ytdlp() -> Option<PathBuf> {
     probe.status.success().then(|| PathBuf::from(name))
 }
 
-/// Löst eine Portal-URL in eine direkt abspielbare Medien-URL auf.
-pub fn resolve_portal(url: &str, max_height: u32, limit: Duration) -> Result<String> {
+/// Bild- und optionale Tonspur, wie yt-dlp sie ausgibt.
+pub struct Aufgeloest {
+    pub video: String,
+    pub audio: Option<String>,
+}
+
+/// Löst eine Portal-URL in direkt abspielbare Medien-URLs auf.
+///
+/// Portale liefern Bild und Ton oft **getrennt** -- bei YouTube ist das seit
+/// Jahren der Normalfall, weil die gemuxten Formate nur noch in niedriger
+/// Auflösung existieren (und ohne JavaScript-Runtime teils gar nicht mehr
+/// auftauchen). Der Formatselektor nimmt deshalb eine gemuxte Spur, wenn es
+/// sie gibt, und sonst die beste Kombination aus getrenntem Bild und Ton.
+///
+/// Bei `-f A+B` gibt yt-dlp die Adressen in der Reihenfolge des Selektors
+/// aus: erst Bild, dann Ton.
+pub fn resolve_portal(url: &str, max_height: u32, limit: Duration) -> Result<Aufgeloest> {
     let exe = find_ytdlp().context(
         "Für diese URL wird yt-dlp gebraucht, das hier nicht gefunden wurde.\n\
          Erwartet wird es als tools/yt-dlp.exe im Projektordner (portabel, \
@@ -228,20 +254,24 @@ pub fn resolve_portal(url: &str, max_height: u32, limit: Duration) -> Result<Str
     let mut c = Command::new(exe);
     c.args([
         "-f",
-        &format!("b[height<={max_height}]/b"),
+        &format!("b[height<={max_height}]/bv[height<={max_height}]+ba/b"),
         "--no-playlist",
         "-g",
         url,
     ]);
     let (ok, out) = super::probe::run_limited(&mut c, limit)?;
-    let erste = out
+    let mut urls = out
         .lines()
-        .find(|l| l.starts_with("http"))
+        .filter(|l| l.starts_with("http"))
         .map(str::to_string);
-    match (ok, erste) {
-        (true, Some(u)) => Ok(u),
-        _ => bail!("yt-dlp konnte aus dieser URL keine abspielbare Adresse gewinnen"),
-    }
+
+    let Some(video) = urls.next().filter(|_| ok) else {
+        bail!("yt-dlp konnte aus dieser URL keine abspielbare Adresse gewinnen");
+    };
+    Ok(Aufgeloest {
+        audio: urls.next(),
+        video,
+    })
 }
 
 /// Die Videogeräte des Systems, in der Reihenfolge, die `cam:<n>` meint.
@@ -470,6 +500,25 @@ mod tests {
             assert!(t.contains("99"), "{t}");
             assert!(t.contains("Verfügbar"), "{t}");
         }
+    }
+
+    #[test]
+    fn gewoehnliche_quellen_haben_keine_getrennte_tonspur() {
+        for q in ["film.mp4", "https://host/x.m3u8", "rtsp://host/live", "-"] {
+            assert!(classify(q).audio_input.is_none(), "{q}");
+        }
+    }
+
+    #[test]
+    fn yt_dlp_wird_im_projektordner_gesucht_bevor_im_pfad() {
+        // Die Reihenfolge ist die Zusage: nichts global installieren.
+        let Some(p) = find_ytdlp() else { return };
+        let t = p.to_string_lossy().to_lowercase();
+        assert!(
+            t.contains("tools") || p.components().count() == 1,
+            "unerwarteter Fundort: {}",
+            p.display()
+        );
     }
 
     #[test]
