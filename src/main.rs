@@ -28,6 +28,16 @@ use term::caps::Caps;
 /// Wie lange ffprobe und yt-dlp höchstens brauchen dürfen.
 const PROBE_LIMIT: Duration = Duration::from_secs(20);
 
+/// Wie lange auf das erste Bild nach einem ffmpeg-Neustart gewartet wird,
+/// bevor auf sequenzielles Spulen umgestellt wird. Manche Server -- jede
+/// aufgelöste YouTube-Adresse -- beantworten die Range-Anfrage nicht,
+/// sondern lassen die Verbindung offen stehen: ffmpeg wartet dann ewig.
+const SPUL_GEDULD: Duration = Duration::from_secs(5);
+
+/// Harte Obergrenze. Kommt bis dahin nichts, wird abgebrochen statt
+/// unbegrenzt ein stehendes Bild zu zeigen.
+const WARTE_GRENZE: Duration = Duration::from_secs(90);
+
 fn main() -> ExitCode {
     term::install_panic_hook();
     let args = Args::parse();
@@ -234,6 +244,41 @@ struct State {
     dither: bool,
 }
 
+/// Baut die Statuszeile. Eigene Funktion, weil sie an zwei Stellen gebraucht
+/// wird: beim gezeigten Bild und beim Warten auf eines -- ohne die zweite
+/// sähe eine lahmende Quelle aus wie ein Absturz.
+#[allow(clippy::too_many_arguments)]
+fn statuszeile(
+    quelle: &input::Input,
+    st: &State,
+    layout: &Layout,
+    clock: &Clock,
+    info: &MediaInfo,
+    warten: bool,
+    ton: bool,
+    breite: u16,
+    stats: Option<term::ui::Stats>,
+) -> String {
+    term::ui::render(
+        &term::ui::Status {
+            quelle: &quelle.label,
+            mode: st.mode,
+            color: st.color,
+            charset: st.charset,
+            grid: (layout.grid_w, layout.grid_h),
+            pos: clock.media_now(),
+            dauer: info.duration,
+            paused: clock.is_paused(),
+            speed: clock.speed(),
+            live: quelle.is_live,
+            volume: ton.then_some(st.volume),
+            warten,
+            stats,
+        },
+        breite,
+    )
+}
+
 fn play(args: Args, caps: Caps, quelle: input::Input, info: MediaInfo) -> Result<()> {
     let mut notes = caps.notes.clone();
     let charset = term::caps::resolve_charset(
@@ -300,6 +345,7 @@ fn play(args: Args, caps: Caps, quelle: input::Input, info: MediaInfo) -> Result
         fit: args.fit,
         gamma_correct: args.gamma_correct,
         loop_forever: args.loop_forever,
+        seekable: true,
     };
 
     if args.verbose {
@@ -360,6 +406,9 @@ fn play(args: Args, caps: Caps, quelle: input::Input, info: MediaInfo) -> Result
     // Prozess noch anläuft oder eine Netzquelle puffert -- und dann gilt
     // alles, was danach kommt, als überfällig und wird verworfen.
     let mut warte_auf_erstes_bild = true;
+    let mut warten_seit = Instant::now();
+    // Wurde für diesen Sprung schon auf sequenzielles Überspulen umgestellt?
+    let mut sequenziell_versucht = false;
 
     let mut grid = Grid::new(layout.grid_w, layout.grid_h);
     let mut dropped: u64 = 0;
@@ -439,6 +488,8 @@ fn play(args: Args, caps: Caps, quelle: input::Input, info: MediaInfo) -> Result
                     rx = neu;
                     clock.seek_to(Duration::from_secs_f64(ziel));
                     warte_auf_erstes_bild = true;
+                    warten_seit = Instant::now();
+                    sequenziell_versucht = false;
                     if let Some(a) = &mut audio {
                         a.seek(ziel);
                     }
@@ -481,6 +532,7 @@ fn play(args: Args, caps: Caps, quelle: input::Input, info: MediaInfo) -> Result
                 rx = r;
                 clock.seek_to(Duration::from_secs_f64(base));
                 warte_auf_erstes_bild = true;
+                warten_seit = Instant::now();
                 writer.force_redraw();
             }
         }
@@ -513,7 +565,46 @@ fn play(args: Args, caps: Caps, quelle: input::Input, info: MediaInfo) -> Result
                 break 'wiedergabe;
             }
             Ok(Msg::Fehler(e)) => bail!("{e}"),
-            Err(crossbeam_channel::RecvTimeoutError::Timeout) => continue,
+            Err(crossbeam_channel::RecvTimeoutError::Timeout) => {
+                if warte_auf_erstes_bild {
+                    let gewartet = warten_seit.elapsed();
+
+                    // Erster Ausweg: sequenziell überspringen statt springen.
+                    if gewartet > SPUL_GEDULD && !sequenziell_versucht && cfg.seekable {
+                        cfg.seekable = false;
+                        sequenziell_versucht = true;
+                        notes.push(
+                            "Diese Quelle beantwortet keine Sprunganfragen -- es wird                              sequenziell überspult, das dauert länger."
+                                .into(),
+                        );
+                        let (r, _) = start_reader(&cfg, &layout)?;
+                        rx = r;
+                        warten_seit = Instant::now();
+                    } else if gewartet > WARTE_GRENZE {
+                        bail!(
+                            "Seit {} Sekunden kein Bild von der Quelle. Abgebrochen,                              statt ein stehendes Bild zu zeigen.",
+                            gewartet.as_secs()
+                        );
+                    }
+
+                    // Statuszeile weiterzeichnen, sonst sieht es aus wie ein Absturz.
+                    if st.ui {
+                        let z = statuszeile(
+                            &quelle,
+                            &st,
+                            &layout,
+                            &clock,
+                            &info,
+                            true,
+                            ton_gewuenscht,
+                            term_size.0,
+                            None,
+                        );
+                        writer.draw(&grid, &layout, st.color, st.dither, Some(&z), term_size.1)?;
+                    }
+                }
+                continue;
+            }
             Err(_) => break 'wiedergabe,
         };
 
@@ -545,33 +636,25 @@ fn play(args: Args, caps: Caps, quelle: input::Input, info: MediaInfo) -> Result
             fps_fenster = (Instant::now(), gezeigt, fps_fenster.2);
         }
 
-        let zeile = if st.ui {
-            Some(term::ui::render(
-                &term::ui::Status {
-                    quelle: &quelle.label,
-                    mode: st.mode,
-                    color: st.color,
-                    charset: st.charset,
-                    grid: (layout.grid_w, layout.grid_h),
-                    pos: pts,
-                    dauer: info.duration,
-                    paused: clock.is_paused(),
-                    speed: clock.speed(),
-                    live: quelle.is_live,
-                    volume: ton_gewuenscht.then_some(st.volume),
-                    stats: args.stats.then_some(term::ui::Stats {
-                        fps: fps_fenster.2,
-                        dropped,
-                        bytes: writer.stats.bytes,
-                        cells_written: writer.stats.cells_written,
-                        cells_total: writer.stats.cells_total,
-                    }),
-                },
+        let zeile = st.ui.then(|| {
+            statuszeile(
+                &quelle,
+                &st,
+                &layout,
+                &clock,
+                &info,
+                false,
+                ton_gewuenscht,
                 term_size.0,
-            ))
-        } else {
-            None
-        };
+                args.stats.then_some(term::ui::Stats {
+                    fps: fps_fenster.2,
+                    dropped,
+                    bytes: writer.stats.bytes,
+                    cells_written: writer.stats.cells_written,
+                    cells_total: writer.stats.cells_total,
+                }),
+            )
+        });
 
         writer.draw(
             &grid,

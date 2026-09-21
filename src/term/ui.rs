@@ -26,6 +26,8 @@ pub struct Status<'a> {
     pub live: bool,
     /// Lautstärke, oder `None` wenn diese Quelle keinen Ton hat
     pub volume: Option<u32>,
+    /// Es wird auf das erste Bild nach einem Neustart gewartet
+    pub warten: bool,
     pub stats: Option<Stats>,
 }
 
@@ -33,7 +35,13 @@ pub struct Status<'a> {
 pub fn render(s: &Status, width: u16) -> String {
     let mut t = String::with_capacity(width as usize + 16);
 
-    t.push_str(if s.paused { "|| " } else { "> " });
+    t.push_str(if s.warten {
+        "... "
+    } else if s.paused {
+        "|| "
+    } else {
+        "> "
+    });
     t.push_str(s.quelle);
 
     if s.live {
@@ -127,6 +135,7 @@ mod tests {
             speed: 1.0,
             live: false,
             volume: Some(100),
+            warten: false,
             stats: None,
         }
     }
@@ -166,6 +175,15 @@ mod tests {
         let z = render(&s, 120);
         assert!(z.contains("live"));
         assert!(!z.contains("0:03/"));
+    }
+
+    #[test]
+    fn warten_ist_vom_pausieren_unterscheidbar() {
+        let mut s = status();
+        s.warten = true;
+        let z = render(&s, 200);
+        assert!(z.contains("..."), "{z}");
+        assert!(!z.contains("||"), "Warten ist keine Pause: {z}");
     }
 
     #[test]

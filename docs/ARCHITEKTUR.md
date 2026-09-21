@@ -258,6 +258,40 @@ gilt nach jedem Neustart, also auch nach Spulen und Fenstergrößenänderung.
 Pause wird aus der Rechnung herausgenommen, statt die Position vorzuspulen.
 Tempowechsel setzen den Anker neu, damit die Position nicht springt.
 
+### Spulen, und warum es einen Wachhund braucht
+
+Gespult wird durch einen ffmpeg-Neustart mit neuem `-ss`. Bei googlevideo --
+also jeder aufgelösten YouTube-Adresse -- ging das schief: der Server
+beantwortet die Range-Anfrage nicht, lässt die Verbindung aber offen stehen.
+ffmpeg wartet dann ewig, liefert nie ein Bild und beendet sich auch nicht. Die
+Hauptschleife lief weiter, zeigte aber immer dasselbe Raster: ein eingefrorenes
+Bild ohne jede Meldung.
+
+Gemessen an einer aufgelösten YouTube-Adresse:
+
+| Variante | Ergebnis |
+|---|---|
+| `-ss` vor `-i` | 0 Bilder, hängt bis zum Abbruch |
+| `-ss` vor `-i` + `-multiple_requests 1` | 0 Bilder, hängt |
+| `-ss` **nach** `-i` | funktioniert, sequenziell |
+| `-ss` vor `-i` + `-seekable 0` | funktioniert, sequenziell |
+
+Beide funktionierenden Wege laden von der aktuellen Stelle durch. Schnelles
+Springen gibt es dort schlicht nicht.
+
+Daraus zwei getrennte Vorkehrungen:
+
+1. **Ausweg.** Kommt nach `SPUL_GEDULD` (5 s) kein Bild, wird mit `-seekable 0`
+   neu gestartet. Das merkt sich die Quelle -- der nächste Sprung zahlt die
+   fünf Sekunden nicht noch einmal.
+2. **Harte Grenze.** Nach `WARTE_GRENZE` (90 s) wird abgebrochen. Ein stehendes
+   Bild ohne Erklärung ist das schlechteste aller Ergebnisse; eine Meldung ist
+   besser als schweigendes Hängen.
+
+Dazu zeichnet die Statuszeile während des Wartens weiter und zeigt `...` statt
+`>`. Ohne das sieht auch ein funktionierender, nur langsamer Sprung aus wie ein
+Absturz.
+
 ---
 
 ## Terminal-Fähigkeiten

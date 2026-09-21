@@ -48,6 +48,13 @@ pub struct Config {
     pub fit: Fit,
     pub gamma_correct: bool,
     pub loop_forever: bool,
+    /// Darf ffmpeg zum Spulen eine Range-Anfrage stellen?
+    ///
+    /// Manche Server -- googlevideo, also jede aufgeloeste YouTube-Adresse --
+    /// beantworten die nicht, sondern lassen die Verbindung offen stehen.
+    /// Mit `false` ueberspringt ffmpeg stattdessen sequenziell: langsamer,
+    /// aber es kommt ueberhaupt ein Bild.
+    pub seekable: bool,
 }
 
 /// Wie viele stderr-Zeilen wir vorhalten, um im Fehlerfall etwas Brauchbares
@@ -86,6 +93,11 @@ pub fn build_args(cfg: &Config, layout: &Layout) -> Vec<String> {
         a.push("-1".into());
     }
     a.extend(cfg.input.pre_args.iter().cloned());
+
+    if !cfg.seekable {
+        a.push("-seekable".into());
+        a.push("0".into());
+    }
 
     // -ss vor -i: ffmpeg springt dann im Container statt alles zu dekodieren.
     if let Some(s) = cfg.start.filter(|s| *s > 0.0) {
@@ -275,6 +287,7 @@ mod tests {
             fit: Fit::Contain,
             gamma_correct: false,
             loop_forever: false,
+            seekable: true,
         }
     }
 
@@ -360,6 +373,25 @@ mod tests {
             !args_von(&c).contains(&"-stream_loop".to_string()),
             "eine Live-Quelle lässt sich nicht wiederholen"
         );
+    }
+
+    #[test]
+    fn seekable_null_landet_vor_dem_eingang() {
+        let mut c = cfg("https://host/videoplayback");
+        c.seekable = false;
+        c.start = Some(30.0);
+        let a = args_von(&c);
+        let sk = a
+            .iter()
+            .position(|s| s == "-seekable")
+            .expect("-seekable fehlt");
+        assert_eq!(a[sk + 1], "0");
+        assert!(sk < a.iter().position(|s| s == "-i").unwrap());
+    }
+
+    #[test]
+    fn seekable_ist_normalerweise_nicht_gesetzt() {
+        assert!(!args_von(&cfg("x.mp4")).contains(&"-seekable".to_string()));
     }
 
     #[test]

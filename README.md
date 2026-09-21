@@ -197,6 +197,14 @@ probieren.
 **Dunkles Material sieht nach nichts aus.** `--auto-contrast` spreizt die
 Helligkeit je Bild.
 
+**Spulen bei YouTube dauert lange.** Das ist keine Macke, sondern eine Grenze
+der Quelle: googlevideo-Adressen beantworten keine Sprunganfragen. `vidinsh`
+merkt das nach fünf Sekunden und stellt auf sequenzielles Überspulen um — es
+lädt dann von der aktuellen Stelle bis zum Ziel durch. Die Statuszeile zeigt
+`...` währenddessen. Bei lokalen Dateien und den meisten Streams springt es
+dagegen sofort. Kommt gar nichts, bricht `vidinsh` nach 90 Sekunden mit einer
+Meldung ab, statt ein stehendes Bild zu zeigen.
+
 **Kein Ton.** Die Statuszeile sagt es dir: `Ton 100%` heißt an, `Ton stumm`
 heißt auf 0 gedreht (mit `↑` wieder hoch), `ohne Ton` heißt, dass für diese
 Quelle kein Ton in Frage kommt. Mit `-v` steht beim Start eine Zeile, die die
