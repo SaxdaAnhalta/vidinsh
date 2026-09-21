@@ -401,6 +401,40 @@ mod tests {
         assert!(aus[0] > 0.0 && aus[0] < 1.0, "war {}", aus[0]);
     }
 
+    /// Prüft die ganze Kette: ffmpeg -> Pipe -> Ringpuffer -> Soundkarte.
+    ///
+    /// Läuft stumm (Lautstärke 0) und wird übersprungen, wenn das
+    /// Testmaterial fehlt oder der Rechner keine Tonausgabe hat -- beides
+    /// sind Umgebungsbedingungen, keine Fehler im Programm.
+    #[test]
+    fn tonkette_spielt_tatsaechlich_ab() {
+        let datei = std::path::Path::new("testdata/av.mp4");
+        if !datei.is_file() {
+            eprintln!("testdata/av.mp4 fehlt -- übersprungen");
+            return;
+        }
+        let _ = crate::source::tools::init(None);
+
+        let Some(a) = start(&input::classify("testdata/av.mp4"), 0.0, 0) else {
+            eprintln!("keine Tonausgabe auf diesem Rechner -- übersprungen");
+            return;
+        };
+
+        let start_pos = a.position();
+        std::thread::sleep(Duration::from_millis(600));
+        let nachher = a.position();
+
+        assert!(
+            nachher > start_pos,
+            "die Abspielposition muss laufen: {start_pos} -> {nachher}"
+        );
+        // Grob im Rahmen: nach 0,6 s dürfen es nicht 5 s sein.
+        assert!(
+            nachher - start_pos < 2.0,
+            "Position lief davon: {start_pos} -> {nachher}"
+        );
+    }
+
     #[test]
     fn ganzzahlformate_werden_gewandelt() {
         let s = shared(16);

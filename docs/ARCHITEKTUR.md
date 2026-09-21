@@ -27,7 +27,7 @@ sind drei andere Dinge, und um die herum ist alles gebaut:
         └── bounded(3) ──────────────┘
 
  Eingabethread (crossterm) ──► Kommandos
- ffplay (Kindprozess)      ──► Ton
+ ffmpeg (PCM) ──► Ringpuffer ──► cpal ──► Ton (und Leit-Uhr)
 ```
 
 Der Lesethread liegt bewusst getrennt: sonst dekodiert ffmpeg nur dann weiter,
@@ -335,28 +335,42 @@ wird dort behandelt.
 
 ## Ton
 
-`ffplay` als eigener Prozess, gestartet **mit dem ersten Bild** statt beim
-Programmstart — bei einer Netzquelle liegen dazwischen leicht Sekunden.
+ffmpeg liefert rohes PCM in einen Ringpuffer, `cpal` gibt es aus. Der
+Lesethread blockiert, wenn der Puffer voll ist -- das bremst ffmpeg auf
+Abspieltempo, statt das ganze Stück in den Speicher zu laden.
 
-Die Grenze ist strukturell: ffplay hat eine eigene Uhr, die sich von außen weder
-auslesen noch steuern lässt. Pause, Spulen und Lautstärke werden deshalb durch
-einen Neustart an der passenden Stelle umgesetzt — hörbar als kurze Lücke.
+Angefordert wird genau das Format, das die Soundkarte ohnehin will: ihre
+Abtastrate, ihre Kanalzahl. Damit muss hier nichts umgerechnet werden; das
+erledigt ffmpeg, das es besser kann.
 
-Getragen wird das davon, dass beide Seiten dieselbe Quelle mit konstanter
-Bildrate lesen und das Bild sich strikt an seine eigene Uhr hält. Über Minuten
-ist die Abweichung nicht wahrnehmbar.
+**Der Ton ist die Leit-Uhr.** Der Audio-Rückruf zählt, was die Soundkarte
+tatsächlich abgeholt hat -- das ist die verlässlichste Zeitquelle im Programm,
+weil sie an echter Hardware hängt und nicht an einer Schätzung. Weicht die
+Bild-Uhr um mehr als 150 ms davon ab, wird sie nachgezogen. Kleiner wäre
+unruhig (Puffergrößen schwanken ohnehin), größer wäre als Versatz sichtbar.
 
-**Der saubere Weg**, falls es doch stört: Ton als zweite ffmpeg-Pipe als rohes
-PCM holen, über `cpal` ausgeben und die Abspielposition zur **Leit-Uhr** machen.
-Das ist die richtige Architektur, deutlich mehr Arbeit, und bewusst
-zurückgestellt — nicht vergessen.
+Nachgezogen wird aber **nur, solange der Ton auch läuft**: Geprüft wird, ob die
+Abspielposition seit dem letzten Durchgang überhaupt gewachsen ist. Ohne diese
+Bedingung würde ein stockender oder leergelaufener Ton das Bild mitreißen und
+einfrieren lassen -- man hätte einen Fehler gegen einen schlimmeren getauscht.
+
+Läuft der Puffer leer, füllt der Rückruf mit Stille auf, statt zu knacken, und
+zählt die Stille **nicht** mit. Sonst liefe die Uhr in einer Unterdeckung davon
+und das Bild zöge nach.
+
+Pause, Spulen und Lautstärke sind Zahlen in einem gemeinsamen Zustand und
+wirken sofort. Das war vorher anders: über einen `ffplay`-Prozess, dessen Uhr
+sich von außen weder auslesen noch steuern lässt, mussten alle drei den Prozess
+neu starten -- hörbar als Lücke. Der Umbau war ohnehin nötig, weil ffplay eine
+eigene Programmdatei von 231 MB ist und die mitgelieferte Fassung sonst doppelt
+so groß geworden wäre.
 
 Kamera und stdin bekommen keinen Ton: die Kamera hat keinen, und stdin lässt
 sich nicht von zwei Prozessen lesen.
 
 Portale liefern Bild und Ton getrennt — bei YouTube ist das der Normalfall.
 `Input` trägt deshalb ein eigenes Feld `audio_input`; das Bild geht an ffmpeg,
-der Ton an ffplay. Bei `-f A+B` gibt yt-dlp die Adressen in der Reihenfolge des
+der Ton an die Tonausgabe. Bei `-f A+B` gibt yt-dlp die Adressen in der Reihenfolge des
 Selektors aus, also erst Bild, dann Ton.
 
 Daran hing eine Falle, die erst beim Zuhören auffiel: `probe` befragt die
@@ -396,6 +410,46 @@ folgt aus `pre_args` und `is_live`.
 
 **Am Durchsatz schrauben:** `SKIP_MIN` in `src/term/writer.rs`, und mit
 `--stats` und `--bench-naive` nachmessen statt raten.
+
+---
+
+## Eine Datei, die überall läuft
+
+`cargo build --release --features bundled` packt ffmpeg in die Programmdatei.
+Ergebnis: 72 MB, die auf einem Rechner laufen, auf dem nichts installiert
+ist. Ohne die Eigenschaft bleibt es bei 1,6 MB.
+
+Gemessen wurde vorher, was das kostet:
+
+| | |
+|---|---|
+| ffmpeg.exe (Gyan full build) | 231 MB |
+| dasselbe zstd-gepackt | 71 MB (38 s bei Stufe 12) |
+| ffprobe.exe + ffplay.exe zusätzlich | +464 MB |
+
+Die letzte Zeile ist der Grund, warum vorher zwei Abhängigkeiten
+verschwinden mussten: mit drei Programmdateien wäre das Einpacken sinnlos
+gewesen. ffprobe ist durch das Parsen von `ffmpeg -i` ersetzt, ffplay durch
+cpal. Übrig bleibt eine Datei.
+
+Der Ablauf:
+
+* `build.rs` packt ffmpeg mit zstd (Stufe 12 -- darüber wächst die Bauzeit
+  stark, ohne dass die Datei nennenswert schrumpft) und erzeugt daneben ein
+  Kennzeichen des Inhalts. Das Ergebnis wird zwischengespeichert; der zweite
+  Bau überspringt das Packen.
+* Beim ersten Start wird nach `%LOCALAPPDATA%idinshfmpeg-<kennzeichen>.exe`
+  entpackt: gemessen 2,7 Sekunden, jeder weitere Start 0,1 Sekunden. Das Kennzeichen im Dateinamen sorgt dafür, dass eine neue Fassung
+  ihr eigenes ffmpeg herausholt statt ein altes weiterzubenutzen.
+* Geschrieben wird erst daneben, dann umbenannt -- zwei gleichzeitig gestartete
+  vidinsh-Prozesse zerlegen sich sonst die Datei. Gewinnt der andere das
+  Rennen, ist seine Datei genauso gut.
+* Geprüft wird auch die Größe, nicht nur die Existenz: ein abgebrochenes
+  Entpacken hinterlässt sonst eine halbe Datei, die bei jedem Start als fertig
+  gilt.
+
+Die Reihenfolge beim Suchen steht in `tools.rs`: `--ffmpeg` schlägt alles,
+dann das mitgelieferte, zuletzt der PATH.
 
 ---
 

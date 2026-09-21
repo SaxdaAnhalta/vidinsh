@@ -366,7 +366,14 @@ fn play(args: Args, caps: Caps, quelle: input::Input, info: MediaInfo) -> Result
         for n in &notes {
             eprintln!("Hinweis: {n}");
         }
-        eprintln!("ffmpeg {}", ffmpeg::build_args(&cfg, &layout).join(" "));
+        // Den echten Pfad zeigen, nicht das Wort "ffmpeg" -- sonst sieht die
+        // Zeile bei der mitgelieferten Fassung nach PATH aus, obwohl sie es
+        // nicht ist, und man sucht den Fehler an der falschen Stelle.
+        eprintln!(
+            "{} {}",
+            source::tools::ffmpeg().display(),
+            ffmpeg::build_args(&cfg, &layout).join(" ")
+        );
     }
 
     let (mut rx, _cmd) = start_reader(&cfg, &layout)?;

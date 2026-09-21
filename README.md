@@ -25,9 +25,31 @@ cargo build --release
 ./target/release/vidinsh --probe
 ```
 
-Weitere Installationen sind nicht nötig. Für Glyph-Masken wird eine Schrift des
-Systems *gelesen* (unter Windows `CascadiaMono.ttf`), nicht kopiert. Nur für
-YouTube-Links wird zusätzlich `yt-dlp` gebraucht — siehe unten.
+Ergibt eine Programmdatei von rund 1,6 MB, die ffmpeg vom System benutzt.
+
+### Eine Datei, die überall läuft
+
+```bash
+cargo build --release --features bundled
+```
+
+Packt ffmpeg in die Programmdatei. Das Ergebnis sind rund **72 MB** — eine
+einzelne Datei, die auf einem Rechner läuft, auf dem **nichts** installiert
+ist. Beim ersten Start wird ffmpeg einmalig nach `%LOCALAPPDATA%idinsh\`
+entpackt (unter Linux und macOS nach `~/.cache/vidinsh/`) — gemessen 2,7
+Sekunden. Jeder weitere Start liegt bei 0,1 Sekunden.
+
+Welches ffmpeg eingepackt wird, bestimmt `VIDINSH_FFMPEG`; ohne die Variable
+wird das aus dem PATH genommen. Das Packen dauert einige Minuten und wird
+zwischengespeichert — der zweite Bau ist wieder schnell.
+
+Ohne diese Eigenschaft bleibt alles wie gehabt: 1,6 MB, ffmpeg vom System.
+Mit `--ffmpeg <pfad>` lässt sich in beiden Fassungen eine bestimmte
+Programmdatei erzwingen.
+
+Für Glyph-Masken wird eine Schrift des Systems *gelesen* (unter Windows
+`CascadiaMono.ttf`), nicht kopiert. Nur für YouTube-Links wird zusätzlich
+`yt-dlp` gebraucht — siehe unten.
 
 ---
 
@@ -148,6 +170,7 @@ Sonstiges
       --probe              Terminal-Fähigkeiten + Testbild, dann Ende
       --stats              fps, verworfene Bilder, Bandbreite
       --write <DATEI>      ANSI-Strom in eine Datei statt ins Terminal
+      --ffmpeg <PFAD>      bestimmte ffmpeg-Programmdatei benutzen
       --list-devices  --no-ui  -v/--verbose
 ```
 
@@ -211,7 +234,9 @@ Quelle kein Ton in Frage kommt. Mit `-v` steht beim Start eine Zeile, die die
 Entscheidung aufschlüsselt. Kamera und stdin haben nie Ton, `--once` und
 `--write` schalten ihn ab.
 
-**Der Ton wandert weg.** Siehe unten — das ist eine bekannte Grenze.
+**Keine Tonausgabe gefunden.** Mit `-v` steht die Begründung da. `vidinsh`
+nimmt das Standard-Ausgabegerät des Systems; gibt es keins, läuft das Bild
+ohne Ton weiter statt abzubrechen.
 
 **Es läuft gar nicht an.** `-v` zeigt das gebaute ffmpeg-Kommando und die
 erkannten Fähigkeiten. Das Kommando lässt sich direkt in der Shell nachstellen.
@@ -220,14 +245,8 @@ erkannten Fähigkeiten. Das Kommando lässt sich direkt in der Shell nachstellen
 
 ## Bekannte Grenzen
 
-**Tonsynchronisation ist eine Näherung.** Der Ton läuft über einen eigenen
-`ffplay`-Prozess, dessen Uhr sich von außen weder auslesen noch steuern lässt.
-Getragen wird das davon, dass beide Seiten dieselbe Quelle mit konstanter
-Bildrate lesen und das Bild sich strikt an seine eigene Uhr hält. Über Minuten
-ist die Abweichung nicht wahrnehmbar. Pause, Spulen und Lautstärke werden durch
-einen Neustart von ffplay an der passenden Stelle umgesetzt — das hört man als
-kurze Lücke. Der saubere Weg wäre, den Ton als rohes PCM selbst auszugeben und
-die Abspielposition zur Leit-Uhr zu machen; das ist bewusst zurückgestellt.
+**Spulen bei YouTube ist langsam.** googlevideo-Adressen beantworten keine
+Sprunganfragen; es wird sequenziell überspult. Siehe oben.
 
 **Sextanten hängen an der Schrift.** Cascadia Mono hat sie, viele andere nicht.
 
