@@ -33,15 +33,21 @@ Ergibt eine Programmdatei von rund 1,6 MB, die ffmpeg vom System benutzt.
 cargo build --release --features bundled
 ```
 
-Packt ffmpeg in die Programmdatei. Das Ergebnis sind rund **72 MB** — eine
+Packt **ffmpeg und yt-dlp** in die Programmdatei. Das Ergebnis sind rund **89 MB** — eine
 einzelne Datei, die auf einem Rechner läuft, auf dem **nichts** installiert
-ist. Beim ersten Start wird ffmpeg einmalig nach `%LOCALAPPDATA%idinsh\`
+ist — einschließlich YouTube und der anderen Portale. Beim ersten Start wird ffmpeg einmalig nach `%LOCALAPPDATA%idinsh\`
 entpackt (unter Linux und macOS nach `~/.cache/vidinsh/`) — gemessen 2,7
 Sekunden. Jeder weitere Start liegt bei 0,1 Sekunden.
 
-Welches ffmpeg eingepackt wird, bestimmt `VIDINSH_FFMPEG`; ohne die Variable
-wird das aus dem PATH genommen. Das Packen dauert einige Minuten und wird
-zwischengespeichert — der zweite Bau ist wieder schnell.
+Welche Dateien eingepackt werden, bestimmen `VIDINSH_FFMPEG` und
+`VIDINSH_YTDLP`; ohne die Variablen wird gesucht (ffmpeg im PATH, yt-dlp
+zusätzlich in `tools/`). Das Packen wird zwischengespeichert — der zweite Bau
+ist wieder schnell.
+
+**ffmpeg ist Pflicht**, sonst bricht der Bau ab: eine mitgelieferte Fassung
+ohne ffmpeg wäre eine Mogelpackung. **yt-dlp ist freiwillig** — fehlt es beim
+Bau, entsteht eine Exe, die alles außer Portal-Links kann, und sagt das beim
+Bau auch.
 
 Ohne diese Eigenschaft bleibt alles wie gehabt: 1,6 MB, ffmpeg vom System.
 Mit `--ffmpeg <pfad>` lässt sich in beiden Fassungen eine bestimmte
@@ -78,11 +84,11 @@ denen die URL keine Mediendatei ist, brauchen `yt-dlp`.
 vidinsh/tools/yt-dlp.exe
 ```
 
-**Nicht global installiert** — gesucht wird in dieser Reihenfolge: `tools/`
-neben der Programmdatei, `tools/` im Arbeitsverzeichnis, dann der PATH. Fehlt
-die Datei, funktionieren alle anderen Quellenarten unverändert; nur Portal-Links
-melden verständlich, dass sie gebraucht wird. Aktualisieren geht mit
-`tools\yt-dlp.exe -U`.
+**Nicht global installiert** — gesucht wird in dieser Reihenfolge:
+mitgeliefert (bei `--features bundled`), `tools/` neben der Programmdatei,
+`tools/` im Arbeitsverzeichnis, dann der PATH. Fehlt die Datei, funktionieren
+alle anderen Quellenarten unverändert; nur Portal-Links melden verständlich,
+dass sie gebraucht wird. Aktualisieren geht mit `tools\yt-dlp.exe -U`.
 
 YouTube liefert Bild und Ton in aller Regel **getrennt**; die gemuxten Formate
 gibt es nur noch in niedriger Auflösung. `vidinsh` nimmt deshalb eine gemuxte
@@ -220,13 +226,17 @@ probieren.
 **Dunkles Material sieht nach nichts aus.** `--auto-contrast` spreizt die
 Helligkeit je Bild.
 
-**Spulen bei YouTube dauert lange.** Das ist keine Macke, sondern eine Grenze
-der Quelle: googlevideo-Adressen beantworten keine Sprunganfragen. `vidinsh`
-merkt das nach fünf Sekunden und stellt auf sequenzielles Überspulen um — es
-lädt dann von der aktuellen Stelle bis zum Ziel durch. Die Statuszeile zeigt
-`...` währenddessen. Bei lokalen Dateien und den meisten Streams springt es
-dagegen sofort. Kommt gar nichts, bricht `vidinsh` nach 90 Sekunden mit einer
-Meldung ab, statt ein stehendes Bild zu zeigen.
+**Spulen bei YouTube dauert ein paar Sekunden.** Das ist eine Grenze der
+Quelle, keine Macke: googlevideo beantwortet keine offenen Bereichsanfragen,
+und genau die stellt ffmpeg beim Springen. `vidinsh` weiß das für
+`*.googlevideo.com` und überspult stattdessen sequenziell — gemessen 5,6
+Sekunden für ein Ziel bei Sekunde 12; weiter hinten dauert es länger. Die
+Statuszeile zeigt `...` währenddessen.
+
+Bei lokalen Dateien und den meisten Streams springt es in 0,2 Sekunden. Bei
+anderen Servern mit derselben Eigenart schaltet `vidinsh` nach vier Sekunden
+selbsttätig um. Kommt gar nichts, bricht es nach 90 Sekunden mit einer Meldung
+ab, statt ein stehendes Bild zu zeigen.
 
 **Kein Ton.** Die Statuszeile sagt es dir: `Ton 100%` heißt an, `Ton stumm`
 heißt auf 0 gedreht (mit `↑` wieder hoch), `ohne Ton` heißt, dass für diese

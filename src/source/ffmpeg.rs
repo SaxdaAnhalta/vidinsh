@@ -69,15 +69,33 @@ pub struct Abschluss {
     pub bilder: u64,
 }
 
+/// Griff zum Abbrechen von außen.
+///
+/// Nötig, weil der Lesethread einen hängenden Prozess nicht selbst bemerkt:
+/// er steckt in `read()` auf einer Pipe, die nie etwas liefert, und sieht
+/// deshalb auch nicht, dass der Empfänger längst fallengelassen wurde. Ohne
+/// diesen Griff bliebe bei jedem Sprung ein ffmpeg zurück, das mit
+/// `-reconnect` weiter am Netz zerrt.
+#[derive(Clone)]
+pub struct Abbruch(Arc<Mutex<Option<Child>>>);
+
+impl Abbruch {
+    pub fn abbrechen(&self) {
+        if let Some(mut c) = self.0.lock().unwrap().take() {
+            let _ = c.kill();
+            let _ = c.wait();
+        }
+    }
+}
+
 pub struct FfmpegSource {
-    child: Child,
+    child: Arc<Mutex<Option<Child>>>,
     out: BufReader<ChildStdout>,
     stderr: Arc<Mutex<VecDeque<String>>>,
     frame_bytes: usize,
     w: u32,
     h: u32,
     index: u64,
-    pub command_line: String,
 }
 
 pub fn build_args(cfg: &Config, layout: &Layout) -> Vec<String> {
@@ -94,7 +112,9 @@ pub fn build_args(cfg: &Config, layout: &Layout) -> Vec<String> {
     }
     a.extend(cfg.input.pre_args.iter().cloned());
 
-    if !cfg.seekable {
+    // Nur bei einem echten Sprung. Am Anfang wird nichts gesucht, und
+    // `-seekable 0` wuerde dort nur das Anlaufen bremsen.
+    if !cfg.seekable && cfg.start.is_some_and(|s| s > 0.0) {
         a.push("-seekable".into());
         a.push("0".into());
     }
@@ -159,8 +179,6 @@ fn filter_chain(cfg: &Config, l: &Layout) -> String {
 impl FfmpegSource {
     pub fn spawn(cfg: &Config, layout: &Layout) -> Result<Self> {
         let args = build_args(cfg, layout);
-        let command_line = format!("{} {}", super::tools::ffmpeg().display(), args.join(" "));
-
         let mut child = Command::new(super::tools::ffmpeg())
             .args(&args)
             .stdin(Stdio::null())
@@ -195,14 +213,13 @@ impl FfmpegSource {
         }
 
         Ok(FfmpegSource {
-            child,
+            child: Arc::new(Mutex::new(Some(child))),
             out,
             stderr,
             frame_bytes: (layout.px_w * layout.px_h * 3) as usize,
             w: layout.px_w,
             h: layout.px_h,
             index: 0,
-            command_line,
         })
     }
 
@@ -247,13 +264,24 @@ impl FfmpegSource {
         }
     }
 
+    /// Griff zum Abbrechen dieses Prozesses von außen.
+    pub fn abbruch(&self) -> Abbruch {
+        Abbruch(Arc::clone(&self.child))
+    }
+
     /// Wartet auf das Prozessende und liefert die gesammelten Meldungen.
     ///
     /// Gewartet wird bewusst: nach dem Dateiende ist der Prozess oft noch
     /// nicht abgeräumt, und ein `try_wait` an dieser Stelle meldete dann
     /// fälschlich "alles in Ordnung".
     pub fn finish(&mut self) -> Abschluss {
-        let erfolg = self.child.wait().map(|s| s.success()).unwrap_or(false);
+        let erfolg = self
+            .child
+            .lock()
+            .unwrap()
+            .as_mut()
+            .map(|c| c.wait().map(|s| s.success()).unwrap_or(false))
+            .unwrap_or(false);
         // Dem stderr-Thread einen Moment lassen, die letzten Zeilen zu holen.
         std::thread::sleep(std::time::Duration::from_millis(50));
         Abschluss {
@@ -266,8 +294,7 @@ impl FfmpegSource {
 
 impl Drop for FfmpegSource {
     fn drop(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
+        self.abbruch().abbrechen();
     }
 }
 
@@ -392,6 +419,29 @@ mod tests {
     #[test]
     fn seekable_ist_normalerweise_nicht_gesetzt() {
         assert!(!args_von(&cfg("x.mp4")).contains(&"-seekable".to_string()));
+    }
+
+    #[test]
+    fn seekable_null_nur_bei_echtem_sprung() {
+        // Ohne Sprung bremst es nur das Anlaufen.
+        let mut c = cfg("https://host/videoplayback");
+        c.seekable = false;
+        assert!(
+            !args_von(&c).contains(&"-seekable".to_string()),
+            "ohne --ss"
+        );
+
+        c.start = Some(0.0);
+        assert!(
+            !args_von(&c).contains(&"-seekable".to_string()),
+            "bei --ss 0"
+        );
+
+        c.start = Some(0.5);
+        assert!(
+            args_von(&c).contains(&"-seekable".to_string()),
+            "bei echtem Sprung"
+        );
     }
 
     #[test]

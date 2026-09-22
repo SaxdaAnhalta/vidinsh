@@ -32,7 +32,7 @@ const PROBE_LIMIT: Duration = Duration::from_secs(20);
 /// bevor auf sequenzielles Spulen umgestellt wird. Manche Server -- jede
 /// aufgelöste YouTube-Adresse -- beantworten die Range-Anfrage nicht,
 /// sondern lassen die Verbindung offen stehen: ffmpeg wartet dann ewig.
-const SPUL_GEDULD: Duration = Duration::from_secs(5);
+const SPUL_GEDULD: Duration = Duration::from_secs(4);
 
 /// Harte Obergrenze. Kommt bis dahin nichts, wird abgebrochen statt
 /// unbegrenzt ein stehendes Bild zu zeigen.
@@ -84,7 +84,7 @@ fn run(args: Args) -> Result<()> {
     // Fassung mit mitgeliefertem ffmpeg wird es hier einmalig entpackt.
     source::tools::init(args.ffmpeg.as_deref())?;
     if args.verbose {
-        eprintln!("ffmpeg: {}", source::tools::beschreibung());
+        eprintln!("{}", source::tools::beschreibung());
     }
 
     let roh = args.input.clone().expect("clap erzwingt die Eingabe");
@@ -199,9 +199,9 @@ enum Msg {
 /// Startet ffmpeg und einen Thread, der Bilder in den Kanal schiebt.
 /// Der Thread endet von selbst, sobald der Empfänger fallengelassen wird --
 /// dabei wird die Quelle aufgeräumt und ffmpeg beendet.
-fn start_reader(cfg: &ffmpeg::Config, layout: &Layout) -> Result<(Receiver<Msg>, String)> {
+fn start_reader(cfg: &ffmpeg::Config, layout: &Layout) -> Result<(Receiver<Msg>, ffmpeg::Abbruch)> {
     let mut src = FfmpegSource::spawn(cfg, layout)?;
-    let cmdline = src.command_line.clone();
+    let abbruch = src.abbruch();
     let (tx, rx) = bounded::<Msg>(3);
 
     std::thread::spawn(move || {
@@ -223,7 +223,7 @@ fn start_reader(cfg: &ffmpeg::Config, layout: &Layout) -> Result<(Receiver<Msg>,
         }
     });
 
-    Ok((rx, cmdline))
+    Ok((rx, abbruch))
 }
 
 fn make_renderer(
@@ -358,7 +358,8 @@ fn play(args: Args, caps: Caps, quelle: input::Input, info: MediaInfo) -> Result
         fit: args.fit,
         gamma_correct: args.gamma_correct,
         loop_forever: args.loop_forever,
-        seekable: true,
+        // Bei belegt sprungunfaehigen Servern gar nicht erst versuchen.
+        seekable: quelle.offene_bereiche,
     };
 
     if args.verbose {
@@ -376,7 +377,7 @@ fn play(args: Args, caps: Caps, quelle: input::Input, info: MediaInfo) -> Result
         );
     }
 
-    let (mut rx, _cmd) = start_reader(&cfg, &layout)?;
+    let (mut rx, mut abbruch) = start_reader(&cfg, &layout)?;
 
     // Ausgabeziel: Terminal oder Datei.
     let sink: Box<dyn Write + Send> =
@@ -398,6 +399,7 @@ fn play(args: Args, caps: Caps, quelle: input::Input, info: MediaInfo) -> Result
 
     let stop = Arc::new(AtomicBool::new(false));
     let (tx_cmd, rx_cmd) = unbounded::<Cmd>();
+    let tx_debug = tx_cmd.clone();
     let _eingabe = if _guard.is_some() {
         Some(control::spawn(tx_cmd, Arc::clone(&stop)))
     } else {
@@ -439,8 +441,19 @@ fn play(args: Args, caps: Caps, quelle: input::Input, info: MediaInfo) -> Result
     let mut bytes_gesamt: u64 = 0;
     let mut fps_fenster = (Instant::now(), 0u64, 0.0f64);
     let mut term_size = (term_w, term_h);
+    let begonnen = Instant::now();
+    let mut debug_seek_erledigt = args.debug_seek.is_none();
 
     'wiedergabe: loop {
+        // Prüfhilfe: einen Sprung auslösen, als wäre eine Taste gedrückt
+        // worden. Ohne das lässt sich das Spulen nur von Hand prüfen.
+        if !debug_seek_erledigt && begonnen.elapsed() > Duration::from_secs(2) {
+            debug_seek_erledigt = true;
+            let d = args.debug_seek.unwrap_or(0.0);
+            eprintln!("[debug-seek] springe um {d:+} s");
+            let _ = tx_debug.send(Cmd::Seek(d));
+        }
+
         // Kommandos zuerst -- sie sollen auch in der Pause wirken.
         while let Ok(c) = rx_cmd.try_recv() {
             match c {
@@ -507,8 +520,12 @@ fn play(args: Args, caps: Caps, quelle: input::Input, info: MediaInfo) -> Result
                     };
                     base = ziel;
                     cfg.start = Some(ziel);
-                    let (neu, _) = start_reader(&cfg, &layout)?;
+                    // Erst den alten Prozess beenden. Haengt er, merkt der
+                    // Lesethread das von selbst nie.
+                    abbruch.abbrechen();
+                    let (neu, a) = start_reader(&cfg, &layout)?;
                     rx = neu;
+                    abbruch = a;
                     clock.seek_to(Duration::from_secs_f64(ziel));
                     warte_auf_erstes_bild = true;
                     warten_seit = Instant::now();
@@ -551,8 +568,10 @@ fn play(args: Args, caps: Caps, quelle: input::Input, info: MediaInfo) -> Result
                 if !quelle.is_live {
                     cfg.start = Some(base);
                 }
-                let (r, _) = start_reader(&cfg, &layout)?;
+                abbruch.abbrechen();
+                let (r, a) = start_reader(&cfg, &layout)?;
                 rx = r;
+                abbruch = a;
                 clock.seek_to(Duration::from_secs_f64(base));
                 warte_auf_erstes_bild = true;
                 warten_seit = Instant::now();
@@ -600,8 +619,10 @@ fn play(args: Args, caps: Caps, quelle: input::Input, info: MediaInfo) -> Result
                             "Diese Quelle beantwortet keine Sprunganfragen -- es wird                              sequenziell überspult, das dauert länger."
                                 .into(),
                         );
-                        let (r, _) = start_reader(&cfg, &layout)?;
+                        abbruch.abbrechen();
+                        let (r, a) = start_reader(&cfg, &layout)?;
                         rx = r;
+                        abbruch = a;
                         warten_seit = Instant::now();
                     } else if gewartet > WARTE_GRENZE {
                         bail!(
@@ -634,6 +655,13 @@ fn play(args: Args, caps: Caps, quelle: input::Input, info: MediaInfo) -> Result
         let pts = Duration::from_secs_f64(base) + frame.pts(fps);
 
         if warte_auf_erstes_bild {
+            if args.verbose {
+                eprintln!(
+                    "[erstes Bild nach {:.1}s bei {:.1}s]",
+                    warten_seit.elapsed().as_secs_f64(),
+                    pts.as_secs_f64()
+                );
+            }
             clock.seek_to(pts);
             warte_auf_erstes_bild = false;
             if ton_gewuenscht && audio.is_none() {
@@ -724,6 +752,7 @@ fn play(args: Args, caps: Caps, quelle: input::Input, info: MediaInfo) -> Result
     }
 
     stop.store(true, Ordering::Relaxed);
+    abbruch.abbrechen();
     drop(rx);
     if let Some(a) = &mut audio {
         a.stop();

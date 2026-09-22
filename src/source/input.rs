@@ -6,7 +6,7 @@
 //! eigentliche Medien-URL auflöst.
 
 use anyhow::{Context, Result, bail};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::Command;
 use std::time::Duration;
 
@@ -33,6 +33,14 @@ pub struct Input {
     pub pre_args: Vec<String>,
     /// laufende Quelle ohne festes Ende -- kein Spulen, kein Fortschritt
     pub is_live: bool,
+    /// Beantwortet der Server offene Bereichsanfragen (`Range: bytes=N-`)?
+    ///
+    /// Genau die stellt ffmpeg beim Spulen. googlevideo -- also jede
+    /// aufgelöste YouTube-Adresse -- lässt sie unbeantwortet und die
+    /// Verbindung offen stehen; ein begrenzter Bereich kommt dagegen in
+    /// Millisekunden zurück. Gemessen, nicht vermutet. Bei `false` wird gar
+    /// nicht erst gesprungen, sondern sofort sequenziell überspult.
+    pub offene_bereiche: bool,
     /// Anzeigename für die Statuszeile
     pub label: String,
 }
@@ -61,6 +69,7 @@ pub fn classify(raw: &str) -> Input {
             audio_input: None,
             pre_args: vec![],
             is_live: true,
+            offene_bereiche: true,
             label: "stdin".into(),
         };
     }
@@ -85,6 +94,7 @@ pub fn classify(raw: &str) -> Input {
                 audio_input: None,
                 pre_args: net_args(true),
                 is_live: true,
+                offene_bereiche: true,
                 label: host,
             };
         }
@@ -101,6 +111,7 @@ pub fn classify(raw: &str) -> Input {
                 audio_input: None,
                 pre_args: net_args(streaming),
                 is_live: streaming,
+                offene_bereiche: !kein_offener_bereich(&host),
                 label: host,
             };
         }
@@ -112,6 +123,7 @@ pub fn classify(raw: &str) -> Input {
             audio_input: None,
             pre_args: vec![],
             is_live: false,
+            offene_bereiche: true,
             label: raw.into(),
         };
     }
@@ -127,8 +139,16 @@ pub fn classify(raw: &str) -> Input {
         audio_input: None,
         pre_args: vec![],
         is_live: false,
+        offene_bereiche: true,
         label,
     }
+}
+
+/// Server, von denen belegt ist, dass sie offene Bereichsanfragen nicht
+/// beantworten. Bewusst eine kurze, benannte Liste statt einer Heuristik --
+/// bei allen anderen greift der Ausweg zur Laufzeit.
+fn kein_offener_bereich(host: &str) -> bool {
+    host.ends_with("googlevideo.com")
 }
 
 /// Netzwerkoptionen. Ohne Wiederverbinden endet jeder längere Stream beim
@@ -161,6 +181,7 @@ fn camera(spec: &str) -> Input {
             audio_input: None,
             pre_args: vec!["-f".into(), "dshow".into()],
             is_live: true,
+            offene_bereiche: true,
             label: format!("Kamera {spec}"),
         }
     }
@@ -172,6 +193,7 @@ fn camera(spec: &str) -> Input {
             audio_input: None,
             pre_args: vec!["-f".into(), "avfoundation".into()],
             is_live: true,
+            offene_bereiche: true,
             label: format!("Kamera {spec}"),
         }
     }
@@ -188,44 +210,13 @@ fn camera(spec: &str) -> Input {
             audio_input: None,
             pre_args: vec!["-f".into(), "v4l2".into()],
             is_live: true,
+            offene_bereiche: true,
             label: format!("Kamera {spec}"),
         }
     }
 }
 
 // ------------------------------------------------------------------- yt-dlp
-
-/// Sucht yt-dlp erst neben dem Programm, dann im Projektordner, dann im PATH.
-/// Global installiert wird bewusst nichts.
-pub fn find_ytdlp() -> Option<PathBuf> {
-    let name = if cfg!(windows) {
-        "yt-dlp.exe"
-    } else {
-        "yt-dlp"
-    };
-
-    let mut kandidaten: Vec<PathBuf> = Vec::new();
-    if let Ok(exe) = std::env::current_exe()
-        && let Some(dir) = exe.parent()
-    {
-        kandidaten.push(dir.join("tools").join(name));
-        // cargo run legt die exe unter target/debug ab
-        if let Some(up) = dir.parent().and_then(Path::parent) {
-            kandidaten.push(up.join("tools").join(name));
-        }
-    }
-    kandidaten.push(PathBuf::from("tools").join(name));
-
-    for k in kandidaten {
-        if k.is_file() {
-            return Some(k);
-        }
-    }
-
-    // Im PATH als letzte Möglichkeit -- falls es doch jemand global hat.
-    let probe = Command::new(name).arg("--version").output().ok()?;
-    probe.status.success().then(|| PathBuf::from(name))
-}
 
 /// Bild- und optionale Tonspur, wie yt-dlp sie ausgibt.
 pub struct Aufgeloest {
@@ -244,10 +235,10 @@ pub struct Aufgeloest {
 /// Bei `-f A+B` gibt yt-dlp die Adressen in der Reihenfolge des Selektors
 /// aus: erst Bild, dann Ton.
 pub fn resolve_portal(url: &str, max_height: u32, limit: Duration) -> Result<Aufgeloest> {
-    let exe = find_ytdlp().context(
+    let exe = super::tools::ytdlp().context(
         "Für diese URL wird yt-dlp gebraucht, das hier nicht gefunden wurde.\n\
-         Erwartet wird es als tools/yt-dlp.exe im Projektordner (portabel, \
-         keine globale Installation).\n\
+         Erwartet wird es als tools/yt-dlp.exe neben der Programmdatei \
+         (portabel, keine globale Installation).\n\
          Direkte Datei-, HLS-, DASH-, RTSP- und RTMP-URLs funktionieren ohne.",
     )?;
 
@@ -492,22 +483,33 @@ mod tests {
     }
 
     #[test]
+    fn googlevideo_wird_als_sprungunfaehig_erkannt() {
+        let i = classify("https://rr5---sn-4g5ednr7.googlevideo.com/videoplayback?expire=1");
+        assert!(
+            !i.offene_bereiche,
+            "sonst wartet jeder Sprung erst in eine Zeitueberschreitung"
+        );
+    }
+
+    #[test]
+    fn gewoehnliche_server_gelten_als_sprungfaehig() {
+        for u in [
+            "https://example.com/video.mp4",
+            "https://cdn.example.com/x.m3u8",
+            "testdata/test.mp4",
+            "rtsp://host/live",
+        ] {
+            assert!(classify(u).offene_bereiche, "{u}");
+        }
+        // Kein Praefix-Treffer auf einem fremden Host.
+        assert!(classify("https://googlevideo.com.example.org/x.mp4").offene_bereiche);
+    }
+
+    #[test]
     fn gewoehnliche_quellen_haben_keine_getrennte_tonspur() {
         for q in ["film.mp4", "https://host/x.m3u8", "rtsp://host/live", "-"] {
             assert!(classify(q).audio_input.is_none(), "{q}");
         }
-    }
-
-    #[test]
-    fn yt_dlp_wird_im_projektordner_gesucht_bevor_im_pfad() {
-        // Die Reihenfolge ist die Zusage: nichts global installieren.
-        let Some(p) = find_ytdlp() else { return };
-        let t = p.to_string_lossy().to_lowercase();
-        assert!(
-            t.contains("tools") || p.components().count() == 1,
-            "unerwarteter Fundort: {}",
-            p.display()
-        );
     }
 
     #[test]

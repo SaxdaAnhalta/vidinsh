@@ -206,6 +206,11 @@ pub struct Args {
     /// Vergleichsmaßstab: ohne Diffing und ohne SGR-Lauflängen ausgeben
     #[arg(long, hide = true)]
     pub bench_naive: bool,
+
+    /// Prüfhilfe: nach 2 s einmal um <F> Sekunden spulen, ohne Tastendruck.
+    /// Nur so lässt sich das Spulen ohne Terminal nachstellen.
+    #[arg(long, hide = true, value_name = "F")]
+    pub debug_seek: Option<f64>,
 }
 
 impl Args {

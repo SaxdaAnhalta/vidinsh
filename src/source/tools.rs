@@ -1,23 +1,28 @@
-//! Wo liegt ffmpeg?
+//! Wo liegen ffmpeg und yt-dlp?
 //!
-//! Eine zentrale Stelle, weil es drei Möglichkeiten gibt und die Reihenfolge
-//! zählt. Wird `vidinsh` mit der Eigenschaft `bundled` gebaut, steckt ein
-//! gepacktes ffmpeg in der Programmdatei selbst; es wird beim ersten Start
-//! einmalig entpackt. Dann läuft das Programm auf einem Rechner, auf dem
+//! Eine zentrale Stelle, weil es mehrere Möglichkeiten gibt und die
+//! Reihenfolge zählt. Wird `vidinsh` mit der Eigenschaft `bundled` gebaut,
+//! stecken beide gepackt in der Programmdatei selbst und werden beim ersten
+//! Start einmalig entpackt. Dann läuft das Programm auf einem Rechner, auf dem
 //! nichts installiert ist.
+//!
+//! Der Unterschied zwischen beiden: ohne ffmpeg geht gar nichts, deshalb ist
+//! es Pflicht. yt-dlp braucht nur, wer Portal-Links abspielt -- fehlt es,
+//! funktioniert alles andere weiter.
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Result, bail};
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
-static PFAD: OnceLock<PathBuf> = OnceLock::new();
+static FFMPEG: OnceLock<PathBuf> = OnceLock::new();
+static YTDLP: OnceLock<Option<PathBuf>> = OnceLock::new();
 
 /// Legt fest, welches ffmpeg benutzt wird. Einmal pro Programmlauf.
 ///
 /// `explizit` kommt von `--ffmpeg` und schlägt alles andere. Danach das
 /// mitgelieferte, zuletzt eins aus dem PATH.
 pub fn init(explizit: Option<&Path>) -> Result<&'static Path> {
-    if let Some(p) = PFAD.get() {
+    if let Some(p) = FFMPEG.get() {
         return Ok(p.as_path());
     }
 
@@ -26,9 +31,9 @@ pub fn init(explizit: Option<&Path>) -> Result<&'static Path> {
             bail!("--ffmpeg zeigt auf {}, dort liegt nichts", p.display());
         }
         p.to_path_buf()
-    } else if let Some(p) = bundled::entpacken()? {
+    } else if let Some(p) = bundled::ffmpeg()? {
         p
-    } else if im_pfad("ffmpeg") {
+    } else if im_pfad("ffmpeg", "-version") {
         PathBuf::from("ffmpeg")
     } else {
         bail!(
@@ -39,22 +44,62 @@ pub fn init(explizit: Option<&Path>) -> Result<&'static Path> {
         );
     };
 
-    Ok(PFAD.get_or_init(|| gewaehlt).as_path())
+    Ok(FFMPEG.get_or_init(|| gewaehlt).as_path())
 }
 
-/// Der festgelegte Pfad.
+/// Der festgelegte ffmpeg-Pfad.
 ///
 /// Lief `init` noch nicht, wird auf `ffmpeg` aus dem PATH zurückgefallen,
 /// statt zu paniken. Eine vergessene Initialisierung soll nicht das ganze
 /// Programm umbringen -- bei der mitgelieferten Fassung ruft `main` `init`
 /// ohnehin als Erstes auf, und nur dann greift das Entpackte.
 pub fn ffmpeg() -> &'static Path {
-    PFAD.get_or_init(|| PathBuf::from("ffmpeg")).as_path()
+    FFMPEG.get_or_init(|| PathBuf::from("ffmpeg")).as_path()
 }
 
-fn im_pfad(name: &str) -> bool {
+/// yt-dlp, sofern auffindbar. Reihenfolge: mitgeliefert, `tools/` neben der
+/// Programmdatei, `tools/` im Arbeitsverzeichnis, PATH.
+///
+/// Global installiert wird bewusst nichts -- `tools/` neben der Programmdatei
+/// ist der vorgesehene Ort für die portable Fassung.
+pub fn ytdlp() -> Option<&'static Path> {
+    YTDLP.get_or_init(ytdlp_suchen).as_deref()
+}
+
+fn ytdlp_suchen() -> Option<PathBuf> {
+    if let Some(p) = bundled::ytdlp() {
+        return Some(p);
+    }
+
+    let name = if cfg!(windows) {
+        "yt-dlp.exe"
+    } else {
+        "yt-dlp"
+    };
+
+    let mut kandidaten: Vec<PathBuf> = Vec::new();
+    if let Ok(exe) = std::env::current_exe()
+        && let Some(dir) = exe.parent()
+    {
+        kandidaten.push(dir.join("tools").join(name));
+        // cargo run legt die exe unter target/debug ab
+        if let Some(up) = dir.parent().and_then(Path::parent) {
+            kandidaten.push(up.join("tools").join(name));
+        }
+    }
+    kandidaten.push(PathBuf::from("tools").join(name));
+
+    kandidaten
+        .into_iter()
+        .find(|k| k.is_file())
+        .or_else(|| im_pfad(name, "--version").then(|| PathBuf::from(name)))
+}
+
+/// `flagge` unterscheidet sich: ffmpeg kennt nur `-version`, yt-dlp nur
+/// `--version`. Ein gemeinsames Flag gibt es nicht.
+fn im_pfad(name: &str, flagge: &str) -> bool {
     std::process::Command::new(name)
-        .arg("-version")
+        .arg(flagge)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
@@ -63,21 +108,34 @@ fn im_pfad(name: &str) -> bool {
         .unwrap_or(false)
 }
 
-/// Wohin das mitgelieferte ffmpeg entpackt wird.
+/// Wohin die mitgelieferten Programme entpackt werden.
 #[cfg_attr(not(feature = "bundled"), allow(dead_code))]
-fn cache_dir() -> Result<PathBuf> {
+fn cache_dir() -> Option<PathBuf> {
     let basis = if cfg!(windows) {
         std::env::var_os("LOCALAPPDATA").map(PathBuf::from)
     } else {
         std::env::var_os("XDG_CACHE_HOME")
             .map(PathBuf::from)
             .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".cache")))
-    }
-    .context("Kein Ort für den Zwischenspeicher gefunden (LOCALAPPDATA bzw. HOME)")?;
-    Ok(basis.join("vidinsh"))
+    }?;
+    Some(basis.join("vidinsh"))
 }
 
-// ------------------------------------------------------- mitgeliefertes ffmpeg
+/// Für `--verbose` und `--probe`.
+pub fn beschreibung() -> String {
+    let mitgeliefert = cfg!(feature = "bundled");
+    let ff = match FFMPEG.get() {
+        Some(p) if mitgeliefert => format!("{} (mitgeliefert)", p.display()),
+        Some(p) => p.display().to_string(),
+        None => "noch nicht festgelegt".into(),
+    };
+    match ytdlp() {
+        Some(p) => format!("ffmpeg: {ff}\nyt-dlp: {}", p.display()),
+        None => format!("ffmpeg: {ff}\nyt-dlp: nicht vorhanden (nur für Portal-Links nötig)"),
+    }
+}
+
+// --------------------------------------------------- mitgelieferte Programme
 
 #[cfg(feature = "bundled")]
 mod bundled {
@@ -85,29 +143,44 @@ mod bundled {
     use anyhow::{Context, Result};
     use std::path::PathBuf;
 
-    /// Von build.rs erzeugt: das gepackte ffmpeg und sein Kennzeichen.
+    /// Ein eingepacktes Programm.
+    pub struct Werkzeug {
+        pub gepackt: &'static [u8],
+        /// Kennzeichen des Inhalts -- steckt im Dateinamen des Entpackten,
+        /// damit zwei Fassungen von vidinsh sich nicht ins Gehege kommen.
+        pub kennzeichen: &'static str,
+        /// Größe im entpackten Zustand, zur Prüfung auf halbe Dateien.
+        pub rohgroesse: u64,
+    }
+
+    // Von build.rs erzeugt: FFMPEG und YTDLP. (Kein Doc-Kommentar -- der
+    // liesse sich an eine Makro-Einbindung nicht anheften.)
     include!(concat!(env!("OUT_DIR"), "/bundled.rs"));
 
+    pub fn ffmpeg() -> Result<Option<PathBuf>> {
+        entpacken("ffmpeg", &FFMPEG).map(Some)
+    }
+
+    /// yt-dlp ist freiwillig: fehlt es im Bau oder scheitert das Entpacken,
+    /// läuft alles außer Portal-Links weiter.
+    pub fn ytdlp() -> Option<PathBuf> {
+        entpacken("yt-dlp", YTDLP.as_ref()?).ok()
+    }
+
     /// Entpackt einmalig und liefert den Pfad.
-    ///
-    /// Der Dateiname trägt das Kennzeichen des Inhalts. Dadurch holt eine neue
-    /// Fassung von vidinsh automatisch ihr eigenes ffmpeg heraus, statt ein
-    /// altes weiterzubenutzen -- und mehrere Fassungen stören sich nicht.
-    pub fn entpacken() -> Result<Option<PathBuf>> {
-        let dir = cache_dir()?;
-        let name = if cfg!(windows) {
-            format!("ffmpeg-{KENNZEICHEN}.exe")
+    fn entpacken(name: &str, w: &Werkzeug) -> Result<PathBuf> {
+        let dir = cache_dir().context("Kein Ort für den Zwischenspeicher gefunden")?;
+        let datei = if cfg!(windows) {
+            format!("{name}-{}.exe", w.kennzeichen)
         } else {
-            format!("ffmpeg-{KENNZEICHEN}")
+            format!("{name}-{}", w.kennzeichen)
         };
-        let ziel = dir.join(&name);
+        let ziel = dir.join(&datei);
 
         // Größe mitprüfen: ein abgebrochenes Entpacken hinterlässt sonst eine
         // halbe Datei, die bei jedem Start als fertig gilt.
-        if let Ok(m) = std::fs::metadata(&ziel) {
-            if m.len() == ROHGROESSE {
-                return Ok(Some(ziel));
-            }
+        if std::fs::metadata(&ziel).is_ok_and(|m| m.len() == w.rohgroesse) {
+            return Ok(ziel);
         }
 
         std::fs::create_dir_all(&dir)
@@ -115,13 +188,13 @@ mod bundled {
 
         // Erst neben das Ziel schreiben, dann umbenennen. Zwei gleichzeitig
         // gestartete vidinsh-Prozesse zerlegen sich sonst die Datei.
-        let tmp = dir.join(format!("{name}.{}.teil", std::process::id()));
+        let tmp = dir.join(format!("{datei}.{}.teil", std::process::id()));
         {
-            let datei = std::fs::File::create(&tmp)
+            let f = std::fs::File::create(&tmp)
                 .with_context(|| format!("{} lässt sich nicht schreiben", tmp.display()))?;
-            let mut aus = std::io::BufWriter::with_capacity(1 << 20, datei);
-            zstd::stream::copy_decode(GEPACKT, &mut aus)
-                .context("Das mitgelieferte ffmpeg lässt sich nicht entpacken")?;
+            let mut aus = std::io::BufWriter::with_capacity(1 << 20, f);
+            zstd::stream::copy_decode(w.gepackt, &mut aus)
+                .with_context(|| format!("Mitgeliefertes {name} lässt sich nicht entpacken"))?;
             std::io::Write::flush(&mut aus)?;
         }
 
@@ -139,7 +212,7 @@ mod bundled {
                 anyhow::bail!("{} ließ sich nicht ablegen", ziel.display());
             }
         }
-        Ok(Some(ziel))
+        Ok(ziel)
     }
 }
 
@@ -148,18 +221,11 @@ mod bundled {
     use anyhow::Result;
     use std::path::PathBuf;
 
-    pub fn entpacken() -> Result<Option<PathBuf>> {
+    pub fn ffmpeg() -> Result<Option<PathBuf>> {
         Ok(None)
     }
-}
-
-/// Für `--verbose` und `--probe`.
-pub fn beschreibung() -> String {
-    let p = PFAD.get().map(|p| p.display().to_string());
-    match (cfg!(feature = "bundled"), p) {
-        (true, Some(p)) => format!("{p} (mitgeliefert)"),
-        (false, Some(p)) => p,
-        (_, None) => "noch nicht festgelegt".into(),
+    pub fn ytdlp() -> Option<PathBuf> {
+        None
     }
 }
 
@@ -177,15 +243,37 @@ mod tests {
     fn ohne_init_wird_der_pfad_benutzt_statt_zu_paniken() {
         // Reihenfolge der Tests ist nicht garantiert; entscheidend ist nur,
         // dass ein Aufruf ohne vorheriges init nicht abstürzt.
-        let p = ffmpeg();
-        assert!(!p.as_os_str().is_empty());
+        assert!(!ffmpeg().as_os_str().is_empty());
     }
 
     #[test]
     fn ffmpeg_ist_im_pfad_auffindbar() {
         // Auf der Entwicklungsmaschine muss das gelten; sonst laufen die
         // übrigen Tests ohnehin nicht.
-        assert!(im_pfad("ffmpeg"));
-        assert!(!im_pfad("ein-programm-das-es-nicht-gibt"));
+        assert!(im_pfad("ffmpeg", "-version"), "ffmpeg kennt nur -version");
+        assert!(
+            !im_pfad("ffmpeg", "--version"),
+            "sonst wäre die Unterscheidung überflüssig"
+        );
+        assert!(!im_pfad("ein-programm-das-es-nicht-gibt", "--version"));
+    }
+
+    #[test]
+    fn ytdlp_wird_nicht_global_gesucht_bevor_im_projekt() {
+        // Die Reihenfolge ist die Zusage: nichts global installieren.
+        let Some(p) = ytdlp() else { return };
+        let t = p.to_string_lossy().to_lowercase();
+        assert!(
+            t.contains("tools") || t.contains("vidinsh") || p.components().count() == 1,
+            "unerwarteter Fundort: {}",
+            p.display()
+        );
+    }
+
+    #[test]
+    fn beschreibung_nennt_beide_werkzeuge() {
+        let b = beschreibung();
+        assert!(b.contains("ffmpeg:"), "{b}");
+        assert!(b.contains("yt-dlp:"), "{b}");
     }
 }

@@ -141,7 +141,13 @@ impl Audio {
         let mut c = Command::new(tools::ffmpeg());
         c.args(["-hide_banner", "-loglevel", "error", "-nostdin"]);
         c.args(&self.input.pre_args);
+        // Dieselbe Falle wie beim Bild: googlevideo beantwortet die offene
+        // Bereichsanfrage nicht, die ffmpeg fuer -ss stellt. Ohne das haengt
+        // der Ton-Prozess nach jedem Sprung still vor sich hin.
         if from > 0.0 {
+            if !self.input.offene_bereiche {
+                c.args(["-seekable", "0"]);
+            }
             c.args(["-ss", &format!("{from:.3}")]);
         }
         c.args(["-i", quelle]);

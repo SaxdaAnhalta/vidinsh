@@ -258,39 +258,69 @@ gilt nach jedem Neustart, also auch nach Spulen und Fenstergrößenänderung.
 Pause wird aus der Rechnung herausgenommen, statt die Position vorzuspulen.
 Tempowechsel setzen den Anker neu, damit die Position nicht springt.
 
-### Spulen, und warum es einen Wachhund braucht
+### Spulen, und warum es drei Vorkehrungen braucht
 
 Gespult wird durch einen ffmpeg-Neustart mit neuem `-ss`. Bei googlevideo --
-also jeder aufgelösten YouTube-Adresse -- ging das schief: der Server
-beantwortet die Range-Anfrage nicht, lässt die Verbindung aber offen stehen.
-ffmpeg wartet dann ewig, liefert nie ein Bild und beendet sich auch nicht. Die
-Hauptschleife lief weiter, zeigte aber immer dasselbe Raster: ein eingefrorenes
-Bild ohne jede Meldung.
+also jeder aufgelösten YouTube-Adresse -- fror das Bild dabei minutenlang ein.
+Die Suche nach dem Grund förderte drei getrennte Fehler zutage.
 
-Gemessen an einer aufgelösten YouTube-Adresse:
+**1. Die Ursache: offene Bereichsanfragen.** Zum Spulen stellt ffmpeg eine
+HTTP-Anfrage mit `Range: bytes=N-` -- ohne Endpunkt. Gemessen an einer
+aufgelösten YouTube-Adresse:
 
-| Variante | Ergebnis |
+| Anfrage | Antwort |
 |---|---|
-| `-ss` vor `-i` | 0 Bilder, hängt bis zum Abbruch |
-| `-ss` vor `-i` + `-multiple_requests 1` | 0 Bilder, hängt |
-| `-ss` **nach** `-i` | funktioniert, sequenziell |
-| `-ss` vor `-i` + `-seekable 0` | funktioniert, sequenziell |
+| `Range: bytes=1000000-1100000` | HTTP 206 in **0,09 s** |
+| `Range: bytes=1000000-` | **keine Antwort**, Verbindung bleibt offen |
 
-Beide funktionierenden Wege laden von der aktuellen Stelle durch. Schnelles
-Springen gibt es dort schlicht nicht.
+Der Server ist also nicht überlastet und die Adresse nicht abgelaufen -- er
+beantwortet schlicht keine offenen Bereiche. ffmpeg wartet daraufhin ewig,
+liefert nie ein Bild und beendet sich auch nicht. Weder ein anderer
+User-Agent noch `-multiple_requests 1` noch `-http_seekable 1` ändern daran
+etwas; nur `-seekable 0` (oder `-ss` hinter `-i`) hilft, und beide lesen
+sequenziell von vorn.
 
-Daraus zwei getrennte Vorkehrungen:
+Deshalb trägt `Input` ein Feld `offene_bereiche`. Für `*.googlevideo.com` steht
+es auf `false`, und dann wird der aussichtslose Versuch übersprungen. Eine
+kurze, benannte Liste statt einer Heuristik -- bei allen anderen Servern greift
+der Ausweg zur Laufzeit.
 
-1. **Ausweg.** Kommt nach `SPUL_GEDULD` (5 s) kein Bild, wird mit `-seekable 0`
-   neu gestartet. Das merkt sich die Quelle -- der nächste Sprung zahlt die
-   fünf Sekunden nicht noch einmal.
-2. **Harte Grenze.** Nach `WARTE_GRENZE` (90 s) wird abgebrochen. Ein stehendes
-   Bild ohne Erklärung ist das schlechteste aller Ergebnisse; eine Meldung ist
-   besser als schweigendes Hängen.
+**2. Der eigentliche Zeitfresser: Prozessleichen.** Der Lesethread steckt bei
+einem hängenden ffmpeg in `read()` auf einer Pipe, die nie etwas liefert. Er
+merkt deshalb *nie*, dass der Empfänger längst fallengelassen wurde -- und
+beendet den Prozess nicht. Bei jedem Sprung blieb ein ffmpeg zurück, das mit
+`-reconnect` weiter am Netz zerrte. Ein Sprung auf Sekunde 12 kostete dadurch
+67 Sekunden statt 6.
+
+`FfmpegSource::abbruch()` gibt jetzt einen Griff heraus, mit dem die
+Hauptschleife den alten Prozess beendet, bevor sie den neuen startet. Auf den
+Lesethread zu bauen war die falsche Annahme: er kann von einer toten Pipe
+nichts lernen.
+
+**3. Der Wachhund.** Für alles, was nicht auf der Liste steht: kommt nach
+`SPUL_GEDULD` (4 s) kein Bild, wird mit `-seekable 0` neu gestartet, und die
+Quelle merkt sich das. Nach `WARTE_GRENZE` (90 s) wird abgebrochen -- ein
+stehendes Bild ohne Erklärung ist das schlechteste aller Ergebnisse.
 
 Dazu zeichnet die Statuszeile während des Wartens weiter und zeigt `...` statt
 `>`. Ohne das sieht auch ein funktionierender, nur langsamer Sprung aus wie ein
 Absturz.
+
+Gemessen nach allen drei Korrekturen, Zeit bis zum ersten Bild nach dem Sprung:
+
+| Quelle | vorher | jetzt |
+|---|---|---|
+| lokale Datei | 0,2 s | 0,2 s |
+| YouTube, Ziel Sekunde 12 | Hänger, faktisch 67 s | **5,6 s** |
+
+Die verbleibenden 5,6 Sekunden sind kein Fehler mehr, sondern der Preis des
+sequenziellen Überspulens -- er wächst mit der Zielposition. Schneller ginge
+es nur mit einem eigenen Zwischenserver, der offene Bereiche in begrenzte
+zerlegt; das wäre ein HTTPS-Client samt TLS-Bibliothek und steht in keinem
+Verhältnis.
+
+Dieselbe Falle gilt für den Ton: `audio.rs` setzt `-seekable 0` unter derselben
+Bedingung. Ohne das hinge nach jedem Sprung der Ton-Prozess still vor sich hin.
 
 ---
 
@@ -415,9 +445,15 @@ folgt aus `pre_args` und `is_live`.
 
 ## Eine Datei, die überall läuft
 
-`cargo build --release --features bundled` packt ffmpeg in die Programmdatei.
-Ergebnis: 72 MB, die auf einem Rechner laufen, auf dem nichts installiert
-ist. Ohne die Eigenschaft bleibt es bei 1,6 MB.
+`cargo build --release --features bundled` packt ffmpeg und yt-dlp in die
+Programmdatei. Ergebnis: eine Datei, die auf einem Rechner läuft, auf dem
+nichts installiert ist -- einschließlich YouTube. Ohne die Eigenschaft bleibt
+es bei 1,6 MB.
+
+Die beiden sind unterschiedlich verbindlich: **ohne ffmpeg geht gar nichts**,
+deshalb bricht der Bau ohne es ab. **yt-dlp braucht nur, wer Portal-Links
+abspielt** -- fehlt es, entsteht eine Exe ohne, die das beim Bau meldet und zur
+Laufzeit nur bei Portal-Links etwas sagt.
 
 Gemessen wurde vorher, was das kostet:
 
@@ -425,6 +461,8 @@ Gemessen wurde vorher, was das kostet:
 |---|---|
 | ffmpeg.exe (Gyan full build) | 231 MB |
 | dasselbe zstd-gepackt | 71 MB (38 s bei Stufe 12) |
+| yt-dlp.exe | 17 MB, gepackt kaum kleiner (intern schon komprimiert) |
+| **fertige Exe mit beidem** | **89 MB** |
 | ffprobe.exe + ffplay.exe zusätzlich | +464 MB |
 
 Die letzte Zeile ist der Grund, warum vorher zwei Abhängigkeiten
@@ -449,7 +487,23 @@ Der Ablauf:
   gilt.
 
 Die Reihenfolge beim Suchen steht in `tools.rs`: `--ffmpeg` schlägt alles,
-dann das mitgelieferte, zuletzt der PATH.
+dann das mitgelieferte, zuletzt der PATH. Für yt-dlp entsprechend:
+mitgeliefert, `tools/` neben der Programmdatei, `tools/` im
+Arbeitsverzeichnis, PATH.
+
+**Beim Prüfen beide Bauformen übersetzen.** Der Code hinter
+`#[cfg(feature = "bundled")]` wird vom schlanken Bau gar nicht angefasst --
+ein Tippfehler darin fällt dort nicht auf, auch nicht bei `cargo test` oder
+`cargo clippy`. Genau so ist ein Vergleich `Result<u64, io::Error> == Ok(n)`
+durchgerutscht, der nicht übersetzt (`io::Error` ist nicht vergleichbar).
+Deshalb gehört zu jeder Prüfung:
+
+```bash
+cargo clippy --all-targets                     # schlank
+cargo clippy --all-targets --features bundled  # mitgeliefert
+```
+
+Das Packen ist zwischengespeichert, der zweite Aufruf kostet also kaum Zeit.
 
 ---
 
