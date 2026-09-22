@@ -44,6 +44,11 @@ pub fn init(explizit: Option<&Path>) -> Result<&'static Path> {
         );
     };
 
+    // Einmal beim Start den Zwischenspeicher durchsehen. Ein
+    // Verzeichnis-Scan kostet nichts und hält ihn auf einer Fassung je
+    // Werkzeug.
+    bundled::pflegen();
+
     Ok(FFMPEG.get_or_init(|| gewaehlt).as_path())
 }
 
@@ -167,14 +172,20 @@ mod bundled {
         entpacken("yt-dlp", YTDLP.as_ref()?).ok()
     }
 
-    /// Entpackt einmalig und liefert den Pfad.
-    fn entpacken(name: &str, w: &Werkzeug) -> Result<PathBuf> {
-        let dir = cache_dir().context("Kein Ort für den Zwischenspeicher gefunden")?;
-        let datei = if cfg!(windows) {
+    /// Wie die entpackte Datei heißt. Das Kennzeichen des Inhalts steckt im
+    /// Namen, damit zwei Fassungen von vidinsh sich nicht ins Gehege kommen.
+    fn dateiname(name: &str, w: &Werkzeug) -> String {
+        if cfg!(windows) {
             format!("{name}-{}.exe", w.kennzeichen)
         } else {
             format!("{name}-{}", w.kennzeichen)
-        };
+        }
+    }
+
+    /// Entpackt einmalig und liefert den Pfad.
+    fn entpacken(name: &str, w: &Werkzeug) -> Result<PathBuf> {
+        let dir = cache_dir().context("Kein Ort für den Zwischenspeicher gefunden")?;
+        let datei = dateiname(name, w);
         let ziel = dir.join(&datei);
 
         // Größe mitprüfen: ein abgebrochenes Entpacken hinterlässt sonst eine
@@ -212,7 +223,138 @@ mod bundled {
                 anyhow::bail!("{} ließ sich nicht ablegen", ziel.display());
             }
         }
+
         Ok(ziel)
+    }
+
+    /// Ab diesem Alter gilt eine `.teil`-Datei als Leiche und nicht mehr als
+    /// laufendes Entpacken. Das dauert gemessen knapp drei Sekunden; eine
+    /// Stunde ist mit reichlich Abstand sicher.
+    const TEIL_LEICHE: std::time::Duration = std::time::Duration::from_secs(3600);
+
+    /// Vorsilben, die dieses Programm im Zwischenspeicher anlegt. Alles
+    /// andere dort gehört jemand anderem und wird nicht angefasst.
+    const VORSILBEN: [&str; 2] = ["ffmpeg-", "yt-dlp-"];
+
+    /// Räumt den Zwischenspeicher auf. Wird einmal beim Start gerufen.
+    ///
+    /// Bewusst **nicht** im Entpacken: das läuft nur, wenn das Werkzeug auch
+    /// gebraucht wird. yt-dlp wird bei einer lokalen Datei nie angefasst --
+    /// eine alte 17-MB-Fassung wäre also nie verschwunden. Aufräumen ist eine
+    /// Frage des Zwischenspeichers, nicht des Entpackens.
+    pub fn pflegen() {
+        let Some(dir) = cache_dir() else {
+            return;
+        };
+        let mut behalten = vec![dateiname("ffmpeg", &FFMPEG)];
+        if let Some(y) = YTDLP.as_ref() {
+            behalten.push(dateiname("yt-dlp", y));
+        }
+
+        let Ok(eintraege) = std::fs::read_dir(&dir) else {
+            return;
+        };
+        for e in eintraege.flatten() {
+            let Ok(datei) = e.file_name().into_string() else {
+                continue;
+            };
+            let alter = e
+                .metadata()
+                .ok()
+                .and_then(|m| m.modified().ok())
+                .and_then(|t| t.elapsed().ok());
+            if ist_veraltet(&datei, &behalten, alter) {
+                // Fehler schlucken: Aufräumen darf die Wiedergabe nicht
+                // gefährden, etwa wenn ein zweiter vidinsh-Prozess die Datei
+                // gerade benutzt (Windows verweigert das Löschen dann).
+                let _ = std::fs::remove_file(e.path());
+            }
+        }
+    }
+
+    /// Darf diese Datei weg?
+    ///
+    /// Eine frische `.teil`-Datei gehört einem gleichzeitig laufenden Prozess,
+    /// der gerade entpackt -- sie zu löschen hieße, ihm die Arbeit unter den
+    /// Händen wegzuziehen. Eine *alte* dagegen ist die Leiche eines
+    /// abgebrochenen Entpackens und belegt bis zu 231 MB, die sonst nie wieder
+    /// jemand anfasst. Ohne diese Unterscheidung wäre das Aufräumen entweder
+    /// gefährlich oder wirkungslos.
+    fn ist_veraltet(datei: &str, behalten: &[String], alter: Option<std::time::Duration>) -> bool {
+        if !VORSILBEN.iter().any(|v| datei.starts_with(v)) {
+            return false;
+        }
+        if behalten.iter().any(|b| b == datei) {
+            return false;
+        }
+        if datei.ends_with(".teil") {
+            // Ohne lesbares Alter lieber stehen lassen.
+            return alter.is_some_and(|a| a > TEIL_LEICHE);
+        }
+        true
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::{TEIL_LEICHE, ist_veraltet};
+        use std::time::Duration;
+
+        const TEIL: &str = "ffmpeg-bbbb.exe.12345.teil";
+        const FRISCH: Option<Duration> = Some(Duration::from_secs(2));
+        const ALT: Option<Duration> = Some(Duration::from_secs(7200));
+
+        fn behalten() -> Vec<String> {
+            vec!["ffmpeg-aaaa.exe".into(), "yt-dlp-cccc.exe".into()]
+        }
+
+        #[test]
+        fn alte_fassungen_werden_erkannt() {
+            assert!(ist_veraltet("ffmpeg-bbbb.exe", &behalten(), ALT));
+            assert!(
+                ist_veraltet("yt-dlp-dddd.exe", &behalten(), ALT),
+                "auch yt-dlp, nicht nur ffmpeg -- genau das fehlte"
+            );
+        }
+
+        #[test]
+        fn die_aktuellen_fassungen_bleiben() {
+            for b in behalten() {
+                assert!(!ist_veraltet(&b, &behalten(), ALT), "{b}");
+            }
+        }
+
+        #[test]
+        fn fremde_dateien_bleiben_unberuehrt() {
+            assert!(!ist_veraltet("notizen.txt", &behalten(), ALT));
+            assert!(
+                !ist_veraltet("ffmpeg.exe", &behalten(), ALT),
+                "ohne Bindestrich"
+            );
+            assert!(!ist_veraltet("irgendwas-aaaa.exe", &behalten(), ALT));
+        }
+
+        #[test]
+        fn frische_halbfertige_dateien_bleiben() {
+            // Die gehört einem Prozess, der gerade entpackt.
+            assert!(!ist_veraltet(TEIL, &behalten(), FRISCH));
+        }
+
+        #[test]
+        fn alte_halbfertige_dateien_werden_weggeraeumt() {
+            // Leiche eines abgebrochenen Entpackens -- bis zu 231 MB.
+            assert!(ist_veraltet(TEIL, &behalten(), ALT));
+        }
+
+        #[test]
+        fn ohne_lesbares_alter_bleibt_die_halbfertige_datei() {
+            assert!(!ist_veraltet(TEIL, &behalten(), None));
+        }
+
+        #[test]
+        fn die_schwelle_liegt_weit_ueber_der_entpackdauer() {
+            // Gemessen knapp 3 s; alles darunter darf nie als Leiche gelten.
+            assert!(TEIL_LEICHE > Duration::from_secs(600));
+        }
     }
 }
 
@@ -227,6 +369,8 @@ mod bundled {
     pub fn ytdlp() -> Option<PathBuf> {
         None
     }
+    /// Ohne mitgelieferte Programme gibt es auch keinen Zwischenspeicher.
+    pub fn pflegen() {}
 }
 
 #[cfg(test)]

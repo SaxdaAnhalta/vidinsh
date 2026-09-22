@@ -491,6 +491,41 @@ dann das mitgelieferte, zuletzt der PATH. Für yt-dlp entsprechend:
 mitgeliefert, `tools/` neben der Programmdatei, `tools/` im
 Arbeitsverzeichnis, PATH.
 
+### Der Zwischenspeicher darf nicht wachsen
+
+248 MB Entpacktes sind vertretbar -- 248 MB *je Fassung* wären es nicht.
+`pflegen()` läuft deshalb einmal bei jedem Start und bringt den Ordner auf
+eine Fassung je Werkzeug.
+
+Zwei Feinheiten, beide teuer erkauft:
+
+**`.teil`-Dateien nach Alter beurteilen.** Beim Entpacken wird erst daneben
+geschrieben und dann umbenannt, damit zwei gleichzeitig gestartete Prozesse
+sich nicht die Datei zerlegen. Eine *frische* `.teil` gehört also einem
+laufenden Entpacken -- sie zu löschen zöge ihm die Arbeit unter den Händen
+weg. Eine *alte* ist die Leiche eines abgebrochenen Vorgangs und belegt bis zu
+231 MB. Die Schwelle liegt bei einer Stunde; gemessen dauert ein Entpacken
+knapp drei Sekunden.
+
+**Aufräumen gehört an den Start, nicht ans Entpacken.** Erst hing es in
+`entpacken()`, und ein Praxistest deckte auf, was die Unit-Tests nicht sehen
+konnten: `ytdlp()` wird nur bei Bedarf gerufen, bei einer lokalen Datei also
+nie. Eine alte yt-dlp-Fassung wäre nie verschwunden. Die Entscheidung *darf
+diese Datei weg* war richtig -- gestellt wurde sie an der falschen Stelle. Das
+ist der Grund für `aufraeum-test.ps1`-artige Prüfungen auf der echten Platte
+neben den Unit-Tests.
+
+Gemessen mit ausgelegten Ködern -- alte Fassung, alte Leiche, frische `.teil`
+eines fremden Prozesses, fremde Datei:
+
+| Köder | erwartet | Ergebnis |
+|---|---|---|
+| `ffmpeg-DEADBEEF….exe` | weg | weg |
+| `yt-dlp-DEADBEEF….exe` | weg | weg |
+| `ffmpeg-….teil`, 48 h alt | weg | weg |
+| `ffmpeg-….teil`, frisch | bleibt | bleibt |
+| `notizen.txt` | bleibt | bleibt |
+
 **Beim Prüfen beide Bauformen übersetzen.** Der Code hinter
 `#[cfg(feature = "bundled")]` wird vom schlanken Bau gar nicht angefasst --
 ein Tippfehler darin fällt dort nicht auf, auch nicht bei `cargo test` oder

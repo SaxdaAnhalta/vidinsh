@@ -39,6 +39,14 @@ ist — einschließlich YouTube und der anderen Portale. Beim ersten Start wird 
 entpackt (unter Linux und macOS nach `~/.cache/vidinsh/`) — gemessen 2,7
 Sekunden. Jeder weitere Start liegt bei 0,1 Sekunden.
 
+**Platzbedarf.** Das Entpackte liegt unter `%LOCALAPPDATA%idinsh\`
+(Linux/macOS: `~/.cache/vidinsh/`) und belegt rund 248 MB — ffmpeg 231 MB,
+yt-dlp 17 MB. Der Ordner wächst *nicht*: bei jedem Start wird er durchgesehen
+und auf eine Fassung je Werkzeug gebracht. Das gilt auch für abgebrochene
+Entpackvorgänge; eine halbfertige Datei wird nach einer Stunde als Leiche
+behandelt und entfernt. Löschen darf man den Ordner jederzeit — beim nächsten
+Start wird neu entpackt.
+
 Welche Dateien eingepackt werden, bestimmen `VIDINSH_FFMPEG` und
 `VIDINSH_YTDLP`; ohne die Variablen wird gesucht (ffmpeg im PATH, yt-dlp
 zusätzlich in `tools/`). Das Packen wird zwischengespeichert — der zweite Bau
