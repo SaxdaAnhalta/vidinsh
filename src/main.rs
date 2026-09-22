@@ -77,7 +77,17 @@ fn run(args: Args) -> Result<()> {
     let caps = term::caps::detect(args.color);
 
     if args.probe {
-        return show_probe(&caps);
+        // Die Werkzeuge gehoeren dazu: wer wissen will, was diese Fassung
+        // kann, schaut hier nach -- und nicht in --verbose einer Wiedergabe.
+        let werkzeuge = source::tools::init(args.ffmpeg.as_deref())
+            .map(|_| source::tools::beschreibung())
+            .unwrap_or_else(|e| {
+                format!(
+                    "ffmpeg: NICHT GEFUNDEN
+  {e:#}"
+                )
+            });
+        return show_probe(&caps, &werkzeuge);
     }
 
     // Ab hier wird ffmpeg gebraucht. Einmal festlegen, welches -- bei einer
@@ -122,7 +132,7 @@ fn run(args: Args) -> Result<()> {
 
 // ------------------------------------------------------------------- --probe
 
-fn show_probe(caps: &Caps) -> Result<()> {
+fn show_probe(caps: &Caps, werkzeuge: &str) -> Result<()> {
     let mut o = std::io::stdout().lock();
     writeln!(o, "vidinsh --probe\n")?;
     writeln!(o, "  Terminal   {}", caps.terminal)?;
@@ -132,6 +142,10 @@ fn show_probe(caps: &Caps) -> Result<()> {
     writeln!(o, "  TTY        {}", ja(caps.is_tty))?;
     for n in &caps.notes {
         writeln!(o, "  Hinweis    {n}")?;
+    }
+    writeln!(o)?;
+    for z in werkzeuge.lines() {
+        writeln!(o, "  {z}")?;
     }
 
     writeln!(o, "\n  Farbverlauf in allen Modi:")?;

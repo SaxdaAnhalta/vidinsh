@@ -27,6 +27,28 @@ cargo build --release
 
 Ergibt eine Programmdatei von rund 1,6 MB, die ffmpeg vom System benutzt.
 
+### Beide Fassungen auf einmal
+
+```powershell
+.uild-beide.ps1
+```
+
+Legt sie nebeneinander ab — nötig, weil cargo beide auf denselben Pfad
+schreibt und sie sich sonst gegenseitig überschreiben:
+
+```
+distidinsh.exe              1,6 MB   nutzt ffmpeg aus dem System
+distidinsh-standalone.exe    89 MB   bringt alles mit
+dist	ools\yt-dlp.exe          17 MB   nur für die schlanke Fassung
+```
+
+Die `tools\`-Kopie daneben braucht es, weil die schlanke Fassung yt-dlp
+*neben der Programmdatei* sucht; ohne sie fände sie es nur, wenn man zufällig
+im Projektordner steht. Die große bringt es selbst mit.
+
+`vidinsh --probe` sagt in beiden Fällen, welche Werkzeuge tatsächlich benutzt
+werden.
+
 ### Eine Datei, die überall läuft
 
 ```bash

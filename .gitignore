@@ -2,3 +2,4 @@ target/
 testdata/
 tools/
 *.ans
+dist/
